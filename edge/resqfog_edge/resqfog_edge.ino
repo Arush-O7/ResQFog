@@ -1,18 +1,18 @@
 // ResQFog edge node - ESP32 + MPU6050 on a pump motor
 //
-// Every second: read the accelerometer, classify the vibration, drive the
-// buzzer/LCD, and send the reading to the fog server. The alarm and the
-// motor trip are decided here on the ESP32, so they still work when the
-// Wi-Fi or the laptop is down. Readings taken while the fog server is
-// unreachable are kept in RAM and uploaded once it is back.
+// Every second: record a short vibration window, classify the vibration,
+// drive the buzzer/LCD, and send the reading (with the window, for the ML
+// model on the fog server). The alarm and the motor trip are decided here
+// on the ESP32, so they still work when the Wi-Fi or the laptop is down.
+// Readings taken while the fog server is unreachable are kept in RAM and
+// uploaded once it is back.
 //
-// Libraries: LiquidCrystal_I2C, TinyGPSPlus (Library Manager)
+// Library: LiquidCrystal_I2C (Library Manager)
 
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
-#include <TinyGPSPlus.h>
 
 // ---------------- Wi-Fi and fog server ----------------
 
@@ -29,10 +29,6 @@ const char* fogServer = FOG_SERVER;
 #define MACHINE_ID "PUMP-01"
 #define SITE_NAME  "VIT Main Sump"
 
-// Used until the GPS gets a fix (and indoors, where it usually won't)
-const double SITE_LAT = 12.96920;
-const double SITE_LON = 79.15590;
-
 // ---------------- Pins ----------------
 
 #define SDA_PIN 21
@@ -47,15 +43,7 @@ const double SITE_LON = 79.15590;
 
 #define BUZZER_PIN 32
 
-// NEO-6M GPS on UART2: GPS TX -> GPIO16, GPS RX -> GPIO17
-#define GPS_RX_PIN 16
-#define GPS_TX_PIN 17
-#define GPS_BAUD 9600
-
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-HardwareSerial gpsSerial(2);
-TinyGPSPlus gps;
 
 // ---------------- Detection settings ----------------
 
@@ -67,6 +55,12 @@ const float CRITICAL_THRESHOLD = 1.20;
 const int TRIP_AFTER = 3;
 
 const unsigned long SAMPLE_INTERVAL = 1000;
+
+// Vibration window for the ML model: 256 readings, one every 2 ms (500 Hz).
+// Must match FS and WINDOW in ml/features.py.
+const int WINDOW = 256;
+const unsigned long WINDOW_STEP_US = 2000;
+float windowData[WINDOW];
 const uint16_t HTTP_TIMEOUT_MS = 1500;
 
 // The fog server already limits SMS to one per minute per machine
@@ -139,9 +133,23 @@ void readAccelerometer() {
   }
 }
 
+float magnitude() {
+  return sqrt(ax * ax + ay * ay + az * az);
+}
+
 float calculateVibration() {
-  float magnitude = sqrt(ax * ax + ay * ay + az * az);
-  return fabs(magnitude - 1.0);   // remove gravity
+  return fabs(magnitude() - 1.0);   // remove gravity
+}
+
+// Fills windowData with the acceleration magnitude, one reading every 2 ms
+void captureWindow() {
+  unsigned long next = micros();
+  for (int i = 0; i < WINDOW; i++) {
+    while ((long)(micros() - next) < 0) {}
+    next += WINDOW_STEP_US;
+    readAccelerometer();
+    windowData[i] = magnitude();
+  }
 }
 
 String classifyVibration(float value) {
@@ -154,32 +162,6 @@ uint8_t statusCode(const String& status) {
   if (status == "CRITICAL") return 2;
   if (status == "WARNING") return 1;
   return 0;
-}
-
-// ---------------- GPS ----------------
-
-void readGPS() {
-  while (gpsSerial.available()) {
-    gps.encode(gpsSerial.read());
-  }
-}
-
-bool hasGpsFix() {
-  return gps.location.isValid() && gps.location.age() < 5000;
-}
-
-// Adds ,"lat":..,"lon":..,"gps":0/1,"sats":n to a JSON object being built
-void appendLocation(String& json) {
-  bool fix = hasGpsFix();
-
-  json += ",\"lat\":";
-  json += String(fix ? gps.location.lat() : SITE_LAT, 6);
-  json += ",\"lon\":";
-  json += String(fix ? gps.location.lng() : SITE_LON, 6);
-  json += ",\"gps\":";
-  json += fix ? "1" : "0";
-  json += ",\"sats\":";
-  json += String(gps.satellites.isValid() ? gps.satellites.value() : 0);
 }
 
 // ---------------- Wi-Fi ----------------
@@ -278,8 +260,10 @@ void handleFogReply(const String& reply) {
 
 // ---------------- Fog communication ----------------
 
-String buildPayload(const String& status) {
-  String json = "{";
+String buildPayload(const String& status, bool withWindow) {
+  String json;
+  json.reserve(withWindow ? 2000 : 200);
+  json += "{";
   json += "\"id\":\"" MACHINE_ID "\"";
   json += ",\"site\":\"" SITE_NAME "\"";
   json += ",\"vibration\":";
@@ -291,7 +275,17 @@ String buildPayload(const String& status) {
   json += "\",\"motor\":\"";
   json += motorTripped ? "TRIPPED" : "RUNNING";
   json += "\"";
-  appendLocation(json);
+
+  if (withWindow) {
+    // window in milli-g, as integers to keep the message short
+    json += ",\"w\":[";
+    for (int i = 0; i < WINDOW; i++) {
+      if (i > 0) json += ",";
+      json += String((int)lroundf(windowData[i] * 1000.0));
+    }
+    json += "]";
+  }
+
   json += "}";
   return json;
 }
@@ -309,7 +303,7 @@ bool sendTelemetry() {
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
 
-  int httpCode = http.POST(buildPayload(currentStatus));
+  int httpCode = http.POST(buildPayload(currentStatus, true));
 
   if (httpCode == 200) {
     handleFogReply(http.getString());
@@ -345,7 +339,6 @@ void flushBacklog() {
   unsigned long now = millis();
 
   String json = "{\"id\":\"" MACHINE_ID "\",\"site\":\"" SITE_NAME "\"";
-  appendLocation(json);
   json += ",\"readings\":[";
 
   for (int i = 0; i < count; i++) {
@@ -409,7 +402,7 @@ void sendCriticalAlert() {
   http.setTimeout(8000);   // fog waits for Twilio before replying
   http.addHeader("Content-Type", "application/json");
 
-  String json = buildPayload("CRITICAL");
+  String json = buildPayload("CRITICAL", false);
   Serial.print("Sending: ");
   Serial.println(json);
 
@@ -482,12 +475,10 @@ void setup() {
 
   writeRegister(0x6B, 0x00);   // wake up
   delay(100);
+  writeRegister(0x1A, 0x01);   // DLPF 184 Hz, 1 kHz internal sample rate
+  writeRegister(0x19, 0x00);   // sample rate divider 0
   writeRegister(0x1C, 0x00);   // accelerometer +-2 g
   Serial.println("MPU initialised.");
-
-  gpsSerial.setRxBufferSize(1024);
-  gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-  Serial.println("GPS started on UART2 (no fix yet, using site location).");
 
   pinMode(IN1_PIN, OUTPUT);
   pinMode(IN2_PIN, OUTPUT);
@@ -511,7 +502,6 @@ void setup() {
 }
 
 void loop() {
-  readGPS();
   maintainWiFi();
 
   motorSpeed = map(analogRead(POT_PIN), 0, 4095, 0, 255);
@@ -525,7 +515,7 @@ void loop() {
   if (millis() - lastSampleTime < SAMPLE_INTERVAL) return;
   lastSampleTime = millis();
 
-  readAccelerometer();
+  captureWindow();             // ~0.5 s; also leaves the latest reading in ax, ay, az
   vibration = calculateVibration();
   currentStatus = classifyVibration(vibration);
 
@@ -538,8 +528,7 @@ void loop() {
   Serial.print("% | Status: ");
   Serial.print(currentStatus);
   if (motorTripped) Serial.print(" | MOTOR TRIPPED");
-  Serial.print(" | GPS: ");
-  Serial.println(hasGpsFix() ? "fix" : "no fix");
+  Serial.println();
 
   // Local alarm first, before any network call
   if (currentStatus == "CRITICAL") {
