@@ -1,0 +1,1396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ResQFog Monitor</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='leaflet/leaflet.css') }}">
+<script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='leaflet/leaflet.js') }}"></script>
+
+<style>
+:root {
+    --bg: #070b14;
+    --surface: #0d1526;
+    --surface-2: #111c31;
+    --border: #1c2a42;
+    --border-soft: #16233a;
+    --text: #e6edf9;
+    --text-2: #9aa8c0;
+    --muted: #64748b;
+    --accent: #3b82f6;
+    --accent-2: #06b6d4;
+    --normal: #22c55e;
+    --normal-bg: rgba(34, 197, 94, .12);
+    --warning: #f5b821;
+    --warning-bg: rgba(245, 184, 33, .12);
+    --critical: #f43f5e;
+    --critical-bg: rgba(244, 63, 94, .13);
+    --offline: #64748b;
+    --offline-bg: rgba(100, 116, 139, .14);
+    --radius: 14px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+}
+
+.num { font-variant-numeric: tabular-nums; }
+
+svg.i {
+    width: 18px; height: 18px;
+    fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+    flex-shrink: 0;
+}
+
+.header {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px;
+    padding: 14px 28px;
+    background: rgba(9, 14, 26, .92);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+}
+
+.brand { display: flex; align-items: center; gap: 12px; }
+
+.brand-mark {
+    width: 40px; height: 40px; border-radius: 11px;
+    display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #fff;
+}
+
+.brand-mark svg.i { width: 22px; height: 22px; }
+
+.brand h1 { font-size: 18px; letter-spacing: .3px; }
+.brand p { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.header-right { display: flex; align-items: center; gap: 10px; }
+
+.pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-size: 12px; color: var(--text-2);
+    white-space: nowrap;
+}
+
+.pill.mode-demo { color: var(--warning); border-color: rgba(245,184,33,.35); }
+.pill.mode-live { color: var(--normal); border-color: rgba(34,197,94,.35); }
+
+.dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--offline);
+}
+
+.dot.on { background: var(--normal); box-shadow: 0 0 10px var(--normal); }
+.dot.off { background: var(--critical); }
+
+.container {
+    max-width: 1520px;
+    margin: 0 auto;
+    padding: 24px 28px 40px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+}
+
+.row { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
+.row-fleet { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
+.row-hero { grid-template-columns: 2fr 1fr; }
+.row-kpi { grid-template-columns: repeat(5, 1fr); }
+.row-main { grid-template-columns: 2.1fr 1fr; }
+.row-bottom { grid-template-columns: 1fr 1fr 1.35fr; }
+
+.panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    min-width: 0;
+}
+
+.panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.panel-head h3 { font-size: 15px; font-weight: 600; }
+.panel-head .hint { font-size: 12px; color: var(--muted); }
+
+.hero {
+    display: flex; flex-direction: column; justify-content: space-between; gap: 22px;
+    position: relative;
+    overflow: hidden;
+    border-left: 4px solid var(--offline);
+    transition: border-color .3s;
+}
+
+.hero[data-state="NORMAL"] { border-left-color: var(--normal); }
+.hero[data-state="WARNING"] { border-left-color: var(--warning); }
+.hero[data-state="CRITICAL"] { border-left-color: var(--critical); animation: critPulse 1.4s ease-in-out infinite; }
+.hero[data-state="TRIPPED"] { border-left-color: var(--critical); }
+
+@keyframes critPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(244,63,94,0); }
+    50% { box-shadow: 0 0 0 1px rgba(244,63,94,.55), 0 0 28px rgba(244,63,94,.18); }
+}
+
+.hero-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+
+.hero-left { display: flex; align-items: center; gap: 16px; }
+
+.hero-icon {
+    width: 54px; height: 54px; border-radius: 14px;
+    display: grid; place-items: center;
+    background: var(--offline-bg); color: var(--offline);
+}
+
+.hero-icon svg.i { width: 26px; height: 26px; }
+
+.hero h2 { font-size: 21px; font-weight: 650; margin-bottom: 5px; }
+.hero p { font-size: 13px; color: var(--text-2); }
+
+.badge {
+    padding: 7px 14px;
+    border-radius: 999px;
+    font-size: 12px; font-weight: 700; letter-spacing: .8px;
+    background: var(--offline-bg); color: var(--text-2);
+    white-space: nowrap;
+}
+
+[data-tone="NORMAL"] .hero-icon, .badge[data-tone="NORMAL"] { background: var(--normal-bg); color: var(--normal); }
+[data-tone="WARNING"] .hero-icon, .badge[data-tone="WARNING"] { background: var(--warning-bg); color: var(--warning); }
+[data-tone="CRITICAL"] .hero-icon, .badge[data-tone="CRITICAL"],
+[data-tone="TRIPPED"] .hero-icon, .badge[data-tone="TRIPPED"] { background: var(--critical-bg); color: var(--critical); }
+
+.hero-machine { font-size: 12px; color: var(--muted); letter-spacing: .4px; margin-bottom: 4px; }
+.hero-machine b { color: var(--text-2); font-weight: 600; }
+.hero-right { display: flex; align-items: center; gap: 10px; }
+.btn.btn-danger { color: #fff; background: var(--critical); border-color: var(--critical); }
+.btn.btn-danger:hover { color: #fff; filter: brightness(1.1); }
+
+.map-box { height: 300px; border-radius: 11px; overflow: hidden; background: var(--surface-2); }
+.leaflet-container { background: var(--surface-2); font: inherit; }
+/* OSM tiles are light; invert them so the map matches the dark theme */
+.leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.9) contrast(.85) saturate(.6); }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface-2); color: var(--text); }
+.leaflet-popup-content { margin: 10px 12px; font-size: 12px; line-height: 1.5; }
+.leaflet-control-attribution { font-size: 9px; }
+.leaflet-tooltip {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    box-shadow: none; font-size: 11px; font-weight: 600; padding: 2px 6px;
+}
+.leaflet-tooltip-right:before { border-right-color: var(--border); }
+.map-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
+
+.machines { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; max-height: 330px; overflow-y: auto; }
+.machine {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px;
+    border-radius: 11px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    cursor: pointer;
+    text-align: left; font: inherit; color: inherit; width: 100%;
+}
+.machine:hover { border-color: #2a3b58; }
+.machine.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.machine .sdot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--offline); }
+.machine-body { flex: 1; min-width: 0; }
+.machine-title { font-size: 13px; font-weight: 600; }
+.machine-sub { font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.machine-val { text-align: right; font-size: 13px; font-weight: 600; }
+.machine-val small { display: block; font-size: 10px; font-weight: 700; letter-spacing: .6px; margin-top: 2px; }
+.sim-tag { font-size: 9px; font-weight: 700; letter-spacing: .5px; color: var(--muted); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+
+.scale { margin-top: 0; }
+
+.hero-facts {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-top: 1px solid var(--border-soft);
+    padding-top: 18px;
+}
+
+.fact { padding: 0 16px; border-left: 1px solid var(--border-soft); min-width: 0; }
+.fact:first-child { padding-left: 0; border-left: none; }
+.fact-k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 6px; }
+.fact-v { font-size: 17px; font-weight: 650; }
+
+.scale-track {
+    position: relative;
+    height: 12px;
+    border-radius: 999px;
+    display: flex;
+    overflow: visible;
+}
+
+.scale-track span:first-child { border-radius: 999px 0 0 999px; }
+.scale-track span:last-child { border-radius: 0 999px 999px 0; }
+
+.zone-n { background: rgba(34,197,94,.35); }
+.zone-w { background: rgba(245,184,33,.4); }
+.zone-c { background: rgba(244,63,94,.45); }
+
+.scale-marker {
+    position: absolute; top: -6px;
+    width: 4px; height: 24px; margin-left: -2px;
+    border-radius: 2px;
+    background: #fff;
+    box-shadow: 0 0 0 3px var(--surface), 0 0 12px rgba(255,255,255,.4);
+    left: 0;
+    transition: left .5s ease;
+}
+
+.scale-labels {
+    position: relative;
+    height: 16px;
+    margin-top: 8px;
+    font-size: 11px; color: var(--muted);
+}
+
+.scale-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.scale-labels span:first-child { transform: none; }
+.scale-labels span:last-child { transform: translateX(-100%); }
+
+.pipeline { display: grid; gap: 10px; }
+
+.node {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px;
+    border-radius: 11px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+}
+
+.node-icon {
+    width: 34px; height: 34px; border-radius: 9px;
+    display: grid; place-items: center;
+    background: rgba(59,130,246,.12); color: var(--accent);
+}
+
+.node-body { flex: 1; min-width: 0; }
+.node-title { font-size: 13px; font-weight: 600; }
+.node-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+.node-state { font-size: 11px; font-weight: 700; letter-spacing: .6px; display: flex; align-items: center; gap: 6px; color: var(--text-2); }
+
+.link {
+    height: 12px;
+    margin-left: 28px;
+    border-left: 2px dashed var(--border);
+}
+
+.link.active { border-left-color: var(--accent); animation: flow 1s linear infinite; }
+
+@keyframes flow { 50% { border-left-color: var(--accent-2); } }
+
+.kpi { display: flex; flex-direction: column; gap: 12px; }
+
+.kpi-head { display: flex; align-items: center; justify-content: space-between; }
+
+.kpi-label {
+    font-size: 11px; color: var(--text-2);
+    text-transform: uppercase; letter-spacing: 1px;
+}
+
+.kpi-icon {
+    width: 32px; height: 32px; border-radius: 9px;
+    display: grid; place-items: center;
+    background: var(--surface-2); color: var(--text-2);
+}
+
+.kpi-icon svg.i { width: 16px; height: 16px; }
+
+.kpi-value { font-size: 30px; font-weight: 700; letter-spacing: -.5px; line-height: 1; }
+.kpi-unit { font-size: 13px; color: var(--muted); margin-left: 4px; font-weight: 500; }
+.kpi-sub { font-size: 12px; color: var(--muted); }
+
+.bar {
+    height: 6px; border-radius: 999px;
+    background: var(--surface-2);
+    overflow: hidden;
+}
+
+.bar > div {
+    height: 100%; width: 0;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    transition: width .4s ease;
+}
+
+.tone-NORMAL { color: var(--normal); }
+.tone-WARNING { color: var(--warning); }
+.tone-CRITICAL, .tone-TRIPPED, .tone-OFFLINE { color: var(--critical); }
+.tone-WAITING { color: var(--muted); }
+
+.chart-box { position: relative; height: 330px; }
+
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-2); flex-wrap: wrap; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 0; border-top: 2px dashed; display: inline-block; }
+
+.metric {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 13px;
+}
+
+.metric:last-child { border-bottom: none; padding-bottom: 0; }
+.metric:first-child { padding-top: 0; }
+.metric .k { color: var(--text-2); }
+.metric .v { font-weight: 600; text-align: right; }
+
+.dist-bar {
+    display: flex; height: 14px;
+    border-radius: 999px; overflow: hidden;
+    background: var(--surface-2);
+    margin-bottom: 18px;
+}
+
+.dist-bar div { transition: width .5s ease; }
+
+.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 8px; }
+
+.events { max-height: 290px; overflow-y: auto; margin-right: -8px; padding-right: 8px; }
+
+.event { display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border-soft); }
+.event:last-child { border-bottom: none; }
+
+.event-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; background: var(--offline); }
+.event-dot.normal { background: var(--normal); }
+.event-dot.warning { background: var(--warning); }
+.event-dot.critical { background: var(--critical); }
+.event-dot.sms { background: var(--accent-2); }
+.event-dot.info { background: var(--accent); }
+
+.event-main { flex: 1; min-width: 0; }
+.event-title { font-size: 13px; font-weight: 600; }
+.event-detail { font-size: 12px; color: var(--text-2); margin-top: 2px; overflow-wrap: anywhere; }
+.event-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+.empty { font-size: 13px; color: var(--muted); padding: 20px 0; text-align: center; }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 12px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font: inherit; font-size: 12px; font-weight: 600;
+    cursor: pointer;
+}
+
+.btn:hover { color: var(--text); border-color: #2a3b58; }
+.btn svg.i { width: 14px; height: 14px; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+.toast {
+    position: fixed; right: 20px; bottom: 20px; z-index: 30;
+    padding: 12px 16px;
+    border-radius: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    font-size: 13px;
+    opacity: 0; transform: translateY(8px);
+    transition: all .25s;
+    pointer-events: none;
+}
+
+.toast.show { opacity: 1; transform: none; }
+
+.rec-banner {
+    display: none;
+    align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+    border-radius: 11px;
+    background: var(--critical-bg);
+    border: 1px solid rgba(244,63,94,.3);
+    font-size: 13px;
+}
+
+.rec-banner.show { display: flex; }
+
+.rec-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--critical);
+    animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes blink { 50% { opacity: .25; } }
+
+.rec-text { flex: 1; min-width: 200px; }
+.rec-banner .bar { flex: 1; min-width: 140px; }
+.rec-banner .bar > div { background: var(--critical); }
+
+.table-wrap { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+th {
+    text-align: left;
+    font-size: 11px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .8px;
+    padding: 0 12px 10px 0;
+    border-bottom: 1px solid var(--border-soft);
+    white-space: nowrap;
+}
+
+td {
+    padding: 11px 12px 11px 0;
+    border-bottom: 1px solid var(--border-soft);
+    white-space: nowrap;
+}
+
+tr:last-child td { border-bottom: none; }
+
+th.r, td.r { text-align: right; }
+
+.tag {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    font-size: 10px; font-weight: 700; letter-spacing: .5px;
+    background: var(--warning-bg); color: var(--warning);
+}
+
+a.btn { text-decoration: none; }
+
+.footer { text-align: center; padding: 8px 0 28px; color: #4d5b72; font-size: 12px; }
+
+@media (max-width: 1250px) {
+    .row-kpi { grid-template-columns: repeat(3, 1fr); }
+    .row-bottom { grid-template-columns: 1fr 1fr; }
+    .row-bottom > .panel:last-child { grid-column: 1 / -1; }
+}
+
+@media (max-width: 980px) {
+    .row-hero, .row-main, .row-fleet { grid-template-columns: minmax(0, 1fr); }
+    .row-kpi { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 640px) {
+    .header { padding: 12px 16px; }
+    .header .hide-sm { display: none; }
+    .container { padding: 16px; gap: 14px; }
+    .row { gap: 14px; }
+    .row-kpi, .row-bottom { grid-template-columns: minmax(0, 1fr); }
+    .map-box { height: 240px; }
+    .hero-top { flex-direction: column; align-items: flex-start; }
+    .hero-facts { grid-template-columns: 1fr 1fr; row-gap: 16px; }
+    .fact:nth-child(3) { padding-left: 0; border-left: none; }
+    .chart-box { height: 260px; }
+}
+</style>
+</head>
+
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+    <symbol id="i-activity" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+    <symbol id="i-octagon" viewBox="0 0 24 24"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></symbol>
+    <symbol id="i-wifi-off" viewBox="0 0 24 24"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+    <symbol id="i-trend" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></symbol>
+    <symbol id="i-avg" viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><polyline points="3 6 8 9 13 5 21 8"/><polyline points="3 18 8 15 13 19 21 16"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
+</svg>
+
+<header class="header">
+    <div class="brand">
+        <div class="brand-mark"><svg class="i"><use href="#i-activity"/></svg></div>
+        <div>
+            <h1>ResQFog</h1>
+            <p>Pumping station condition monitoring</p>
+        </div>
+    </div>
+
+    <div class="header-right">
+        <span class="pill hide-sm" id="modePill">LIVE</span>
+        <span class="pill"><span class="dot" id="fogDot"></span><span id="fogText">Connecting…</span></span>
+        <span class="pill hide-sm num"><svg class="i" style="width:14px;height:14px"><use href="#i-clock"/></svg><span id="clock">--:--:--</span></span>
+    </div>
+</header>
+
+<main class="container">
+
+    <section class="row row-fleet">
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>Pump Network</h3>
+                <span class="hint" id="mapHint">Location reported by each edge node</span>
+            </div>
+            <div class="map-box" id="map"></div>
+            <div class="map-note" id="mapNote"></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>Machines</h3>
+                <span class="hint" id="fleetHint">--</span>
+            </div>
+            <div class="machines" id="machines"></div>
+        </div>
+
+    </section>
+
+    <section class="row row-hero">
+
+        <div class="panel hero" id="hero" data-state="WAITING" data-tone="WAITING">
+            <div class="hero-top">
+                <div class="hero-left">
+                    <div class="hero-icon"><svg class="i" id="heroIcon"><use href="#i-activity"/></svg></div>
+                    <div>
+                        <div class="hero-machine" id="heroMachine">--</div>
+                        <h2 id="heroTitle">Waiting for Edge Node</h2>
+                        <p id="heroDesc">No telemetry received yet. Power on the ESP32 to begin monitoring.</p>
+                    </div>
+                </div>
+                <div class="hero-right">
+                    <button class="btn btn-danger" id="btnRestart" style="display:none"><svg class="i"><use href="#i-refresh"/></svg>Restart motor</button>
+                    <div class="badge" id="heroBadge" data-tone="WAITING">WAITING</div>
+                </div>
+            </div>
+
+            <div class="scale">
+                <div class="scale-track" id="scaleTrack">
+                    <span class="zone-n" id="zoneN"></span>
+                    <span class="zone-w" id="zoneW"></span>
+                    <span class="zone-c" id="zoneC"></span>
+                    <div class="scale-marker" id="scaleMarker"></div>
+                </div>
+                <div class="scale-labels num" id="scaleLabels"></div>
+            </div>
+
+            <div class="hero-facts">
+                <div class="fact"><div class="fact-k">Current reading</div><div class="fact-v num" id="fCur">-- g</div></div>
+                <div class="fact"><div class="fact-k">Headroom to critical</div><div class="fact-v num" id="fHead">-- g</div></div>
+                <div class="fact"><div class="fact-k">In this state</div><div class="fact-v num" id="fFor">--</div></div>
+                <div class="fact"><div class="fact-k">Recommended action</div><div class="fact-v" id="fAct">--</div></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>Data Pipeline</h3>
+                <span class="hint">Edge → Fog → Cloud</span>
+            </div>
+
+            <div class="pipeline">
+                <div class="node">
+                    <div class="node-icon"><svg class="i"><use href="#i-cpu"/></svg></div>
+                    <div class="node-body">
+                        <div class="node-title">Edge Node</div>
+                        <div class="node-sub" id="pEdgeSub">ESP32 + MPU6050 · threshold detection</div>
+                    </div>
+                    <div class="node-state" id="pEdge"><span class="dot"></span>WAITING</div>
+                </div>
+                <div class="link" id="link1"></div>
+                <div class="node">
+                    <div class="node-icon"><svg class="i"><use href="#i-server"/></svg></div>
+                    <div class="node-body">
+                        <div class="node-title">Fog Server</div>
+                        <div class="node-sub">Flask · aggregation & alert routing</div>
+                    </div>
+                    <div class="node-state" id="pFog"><span class="dot"></span>--</div>
+                </div>
+                <div class="link" id="link2"></div>
+                <div class="node">
+                    <div class="node-icon"><svg class="i"><use href="#i-phone"/></svg></div>
+                    <div class="node-body">
+                        <div class="node-title">Cloud Alerting</div>
+                        <div class="node-sub">Twilio SMS → maintenance manager</div>
+                    </div>
+                    <div class="node-state" id="pSms"><span class="dot"></span>--</div>
+                </div>
+            </div>
+        </div>
+
+    </section>
+
+    <section class="row row-kpi">
+
+        <div class="panel kpi">
+            <div class="kpi-head">
+                <span class="kpi-label">Vibration</span>
+                <span class="kpi-icon"><svg class="i"><use href="#i-activity"/></svg></span>
+            </div>
+            <div><span class="kpi-value num" id="kVib">0.00</span><span class="kpi-unit">g</span></div>
+            <div class="kpi-sub">Live acceleration deviation</div>
+        </div>
+
+        <div class="panel kpi">
+            <div class="kpi-head">
+                <span class="kpi-label">Motor Speed</span>
+                <span class="kpi-icon"><svg class="i"><use href="#i-gauge"/></svg></span>
+            </div>
+            <div><span class="kpi-value num" id="kSpeed">0</span><span class="kpi-unit">%</span></div>
+            <div class="bar"><div id="kSpeedBar"></div></div>
+            <div class="kpi-sub num" id="kPwm">PWM 0 / 255</div>
+        </div>
+
+        <div class="panel kpi">
+            <div class="kpi-head">
+                <span class="kpi-label">Session Average</span>
+                <span class="kpi-icon"><svg class="i"><use href="#i-avg"/></svg></span>
+            </div>
+            <div><span class="kpi-value num" id="kAvg">0.00</span><span class="kpi-unit">g</span></div>
+            <div class="kpi-sub num" id="kSamples">0 samples</div>
+        </div>
+
+        <div class="panel kpi">
+            <div class="kpi-head">
+                <span class="kpi-label">Session Peak</span>
+                <span class="kpi-icon"><svg class="i"><use href="#i-trend"/></svg></span>
+            </div>
+            <div><span class="kpi-value num" id="kMax">0.00</span><span class="kpi-unit">g</span></div>
+            <div class="kpi-sub num" id="kMaxTime">Recorded at --</div>
+        </div>
+
+        <div class="panel kpi">
+            <div class="kpi-head">
+                <span class="kpi-label">Critical Alerts</span>
+                <span class="kpi-icon"><svg class="i"><use href="#i-bell"/></svg></span>
+            </div>
+            <div><span class="kpi-value num" id="kAlerts">0</span></div>
+            <div class="kpi-sub num" id="kSms">0 SMS sent</div>
+        </div>
+
+    </section>
+
+    <section class="row row-main">
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>Live Vibration</h3>
+                <div class="legend">
+                    <span><i style="border-color:var(--warning)"></i>Warning {{ '%.2f'|format(warning) }} g</span>
+                    <span><i style="border-color:var(--critical)"></i>Critical {{ '%.2f'|format(critical) }} g</span>
+                </div>
+            </div>
+            <div class="chart-box"><canvas id="chart"></canvas></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>System Health</h3>
+                <span class="hint">Auto-refresh 1s</span>
+            </div>
+
+            <div class="metric"><span class="k">Edge node</span><span class="v" id="hEdge">WAITING</span></div>
+            <div class="metric"><span class="k">Location</span><span class="v num" id="hLoc">--</span></div>
+            <div class="metric"><span class="k">Motor</span><span class="v" id="hMotor">--</span></div>
+            <div class="metric"><span class="k">Last telemetry</span><span class="v num" id="hLast">--</span></div>
+            <div class="metric"><span class="k">Data rate</span><span class="v num" id="hRate">0.0 msg/s</span></div>
+            <div class="metric"><span class="k">Recovered after outage</span><span class="v num" id="hRecovered">0 readings</span></div>
+            <div class="metric"><span class="k">Fog uptime</span><span class="v num" id="hUptime">0s</span></div>
+            <div class="metric"><span class="k">SMS service</span><span class="v" id="hSms">--</span></div>
+            <div class="metric"><span class="k">Last SMS</span><span class="v num" id="hSmsLast">--</span></div>
+        </div>
+
+    </section>
+
+    <section class="row row-bottom">
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>Machine Condition</h3>
+                <span class="hint">Time in each state</span>
+            </div>
+
+            <div class="dist-bar">
+                <div id="dN" style="background:var(--normal);width:0"></div>
+                <div id="dW" style="background:var(--warning);width:0"></div>
+                <div id="dC" style="background:var(--critical);width:0"></div>
+            </div>
+
+            <div class="metric"><span class="k"><span class="swatch" style="background:var(--normal)"></span>Normal</span><span class="v num" id="pN">0%</span></div>
+            <div class="metric"><span class="k"><span class="swatch" style="background:var(--warning)"></span>Warning</span><span class="v num" id="pW">0%</span></div>
+            <div class="metric"><span class="k"><span class="swatch" style="background:var(--critical)"></span>Critical</span><span class="v num" id="pC">0%</span></div>
+            <div class="metric"><span class="k">Minimum reading</span><span class="v num" id="kMin">0.00 g</span></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>Detection Rules</h3>
+                <span class="hint">Threshold model</span>
+            </div>
+
+            <div class="metric"><span class="k"><span class="swatch" style="background:var(--normal)"></span>Normal</span><span class="v num">&lt; {{ '%.2f'|format(warning) }} g</span></div>
+            <div class="metric"><span class="k"><span class="swatch" style="background:var(--warning)"></span>Warning</span><span class="v num">{{ '%.2f'|format(warning) }} – {{ '%.2f'|format(critical) }} g</span></div>
+            <div class="metric"><span class="k"><span class="swatch" style="background:var(--critical)"></span>Critical</span><span class="v num">≥ {{ '%.2f'|format(critical) }} g</span></div>
+            <div class="metric"><span class="k">Critical action</span><span class="v">Buzzer + SMS + fault recording</span></div>
+            <div class="metric"><span class="k">Protection</span><span class="v">Motor trip after {{ trip_after }} critical readings</span></div>
+
+            <div class="actions" style="margin-top:16px">
+                <button class="btn" id="btnReset"><svg class="i"><use href="#i-refresh"/></svg>Reset session</button>
+                <button class="btn" id="btnSms"><svg class="i"><use href="#i-send"/></svg>Send test SMS</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>Event Log</h3>
+                <span class="hint">Latest 20</span>
+            </div>
+            <div class="events" id="events">
+                <div class="empty">No events yet</div>
+            </div>
+        </div>
+
+    </section>
+
+    <section class="row">
+
+        <div class="panel">
+            <div class="panel-head">
+                <h3>Fault Recordings</h3>
+                <span class="hint" id="faultHint">Samples before and after each critical event · CSV</span>
+            </div>
+
+            <div class="rec-banner" id="recBanner">
+                <span class="rec-dot"></span>
+                <span class="rec-text num" id="recText">Recording…</span>
+                <div class="bar"><div id="recBar"></div></div>
+            </div>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Fault time</th>
+                            <th class="r">Fault reading</th>
+                            <th class="r">Peak</th>
+                            <th class="r">Avg before</th>
+                            <th class="r">Avg after</th>
+                            <th class="r">Samples (before / after)</th>
+                            <th class="r">Data</th>
+                        </tr>
+                    </thead>
+                    <tbody id="faultRows"></tbody>
+                </table>
+            </div>
+        </div>
+
+    </section>
+
+</main>
+
+<footer class="footer">ResQFog · Edge–Fog–Cloud condition monitoring for water-supply pumping stations</footer>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const WARNING = {{ warning }};
+const CRITICAL = {{ critical }};
+const TRIP_AFTER = {{ trip_after }};
+const SCALE_MAX = Math.ceil(CRITICAL * 1.5);
+
+const $ = id => document.getElementById(id);
+
+const COLORS = {
+    NORMAL: "#22c55e",
+    WARNING: "#f5b821",
+    CRITICAL: "#f43f5e",
+    TRIPPED: "#f43f5e",
+    OFFLINE: "#64748b",
+    WAITING: "#64748b"
+};
+
+let selected = new URLSearchParams(location.search).get("m") || "";
+
+const HERO = {
+    NORMAL: {
+        icon: "i-check",
+        title: "Machine Operating Normally",
+        desc: "Vibration is within the normal operating range.",
+        action: "None required"
+    },
+    WARNING: {
+        icon: "i-alert",
+        title: "Elevated Vibration Detected",
+        desc: "Vibration above warning level. Monitor the machine closely.",
+        action: "Schedule inspection"
+    },
+    CRITICAL: {
+        icon: "i-octagon",
+        title: "Critical Machine Condition",
+        desc: "Severe vibration detected. Alert escalated — inspect immediately.",
+        action: "Stop & inspect"
+    },
+    TRIPPED: {
+        icon: "i-octagon",
+        title: "Motor Stopped by Edge Protection",
+        desc: `Critical vibration lasted ${TRIP_AFTER} readings, so the ESP32 cut motor power.`,
+        action: "Inspect, then restart"
+    },
+    OFFLINE: {
+        icon: "i-wifi-off",
+        title: "Edge Node Offline",
+        desc: "No telemetry received recently. Check ESP32 power and Wi-Fi.",
+        action: "Check edge node"
+    },
+    WAITING: {
+        icon: "i-activity",
+        title: "Waiting for Edge Node",
+        desc: "No telemetry received yet. Power on the ESP32 to begin monitoring.",
+        action: "Power on ESP32"
+    }
+};
+
+function buildScale() {
+    $("zoneN").style.width = (WARNING / SCALE_MAX * 100) + "%";
+    $("zoneW").style.width = ((CRITICAL - WARNING) / SCALE_MAX * 100) + "%";
+    $("zoneC").style.width = ((SCALE_MAX - CRITICAL) / SCALE_MAX * 100) + "%";
+
+    const labels = [0, WARNING, CRITICAL, SCALE_MAX];
+    $("scaleLabels").innerHTML = labels
+        .map(v => `<span style="left:${v / SCALE_MAX * 100}%">${v === 0 ? "0" : v.toFixed(2)} g</span>`)
+        .join("");
+}
+
+const thresholdLines = {
+    id: "thresholdLines",
+    afterDatasetsDraw(chart) {
+        const { ctx, chartArea, scales } = chart;
+        [[WARNING, COLORS.WARNING], [CRITICAL, COLORS.CRITICAL]].forEach(([value, color]) => {
+            const y = scales.y.getPixelForValue(value);
+            if (y < chartArea.top || y > chartArea.bottom) return;
+            ctx.save();
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.8;
+            ctx.setLineDash([6, 5]);
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(chartArea.left, y);
+            ctx.lineTo(chartArea.right, y);
+            ctx.stroke();
+            ctx.restore();
+        });
+    }
+};
+
+let chart;
+
+function initChart() {
+    const ctx = $("chart").getContext("2d");
+
+    const gradient = ctx.createLinearGradient(0, 0, 0, 330);
+    gradient.addColorStop(0, "rgba(59,130,246,.30)");
+    gradient.addColorStop(1, "rgba(59,130,246,0)");
+
+    chart = new Chart(ctx, {
+        type: "line",
+        data: {
+            labels: [],
+            datasets: [{
+                label: "Vibration",
+                data: [],
+                borderColor: "#3b82f6",
+                backgroundColor: gradient,
+                fill: true,
+                borderWidth: 2,
+                tension: 0.3,
+                pointRadius: 0,
+                pointHoverRadius: 5,
+                segment: {
+                    borderColor: c => {
+                        const v = Math.max(c.p0.parsed.y, c.p1.parsed.y);
+                        if (v >= CRITICAL) return COLORS.CRITICAL;
+                        if (v >= WARNING) return COLORS.WARNING;
+                        return "#3b82f6";
+                    }
+                }
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode: "index", intersect: false },
+            scales: {
+                x: {
+                    ticks: { color: "#64748b", maxTicksLimit: 8, maxRotation: 0 },
+                    grid: { color: "#142036" }
+                },
+                y: {
+                    beginAtZero: true,
+                    suggestedMax: CRITICAL * 1.4,
+                    ticks: { color: "#64748b", callback: v => v.toFixed(1) + " g" },
+                    grid: { color: "#142036" }
+                }
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: "#111c31",
+                    borderColor: "#1c2a42",
+                    borderWidth: 1,
+                    titleColor: "#e6edf9",
+                    bodyColor: "#9aa8c0",
+                    displayColors: false,
+                    callbacks: { label: c => c.parsed.y.toFixed(2) + " g" }
+                }
+            }
+        },
+        plugins: [thresholdLines]
+    });
+}
+
+function setState(el, text, tone) {
+    el.innerHTML = "";
+    const dot = document.createElement("span");
+    dot.className = "dot" + (tone === "on" ? " on" : tone === "off" ? " off" : "");
+    el.append(dot, text);
+}
+
+function renderHero(state, vibration) {
+    const info = HERO[state] || HERO.WAITING;
+    const hero = $("hero");
+    hero.dataset.state = state;
+    hero.dataset.tone = state;
+    $("heroBadge").dataset.tone = state;
+    $("heroBadge").textContent = state;
+    $("heroIcon").querySelector("use").setAttribute("href", "#" + info.icon);
+    $("heroTitle").textContent = info.title;
+    $("heroDesc").textContent = info.desc;
+
+    const pct = Math.min(vibration, SCALE_MAX) / SCALE_MAX * 100;
+    $("scaleMarker").style.left = pct + "%";
+}
+
+function renderEvents(events) {
+    const box = $("events");
+    box.innerHTML = "";
+
+    if (!events.length) {
+        box.innerHTML = '<div class="empty">No events yet</div>';
+        return;
+    }
+
+    events.forEach(e => {
+        const row = document.createElement("div");
+        row.className = "event";
+
+        const dot = document.createElement("div");
+        dot.className = "event-dot " + e.level;
+
+        const main = document.createElement("div");
+        main.className = "event-main";
+
+        const title = document.createElement("div");
+        title.className = "event-title";
+        title.textContent = e.title;
+
+        const detail = document.createElement("div");
+        detail.className = "event-detail";
+        detail.textContent = e.detail;
+
+        const time = document.createElement("div");
+        time.className = "event-time num";
+        time.textContent = e.time;
+
+        main.append(title, detail);
+        row.append(dot, main, time);
+        box.append(row);
+    });
+}
+
+let map = null;
+const markers = {};
+let mapFitted = false;
+
+function initMap() {
+    if (typeof L === "undefined") {
+        $("map").innerHTML = '<div class="empty">Map library not loaded</div>';
+        return;
+    }
+    map = L.map("map", { zoomControl: true, attributionControl: true }).setView([12.96, 79.15], 13);
+    const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+    tiles.on("tileerror", () => {
+        $("mapNote").textContent = "Map tiles need internet. Machine positions are still listed on the right.";
+    });
+}
+
+function renderMap(fleet) {
+    if (!map) return;
+    const placed = [];
+
+    fleet.forEach(m => {
+        if (m.lat === null || m.lon === null) return;
+        const color = COLORS[m.state] || COLORS.OFFLINE;
+        const popup =
+            `<b>${m.id}</b> · ${m.site}<br>${m.state} · ${m.vibration.toFixed(2)} g<br>` +
+            `${m.lat.toFixed(5)}, ${m.lon.toFixed(5)} (${m.gpsFix ? "GPS" : "fixed"})`;
+
+        let mk = markers[m.id];
+        if (!mk) {
+            mk = markers[m.id] = L.circleMarker([m.lat, m.lon], { radius: 9, weight: 3 }).addTo(map);
+            mk.on("click", () => selectMachine(m.id));
+            mk.bindTooltip(m.id, { permanent: true, direction: "right", offset: [10, 0], className: "" });
+        }
+        mk.setLatLng([m.lat, m.lon]);
+        mk.setStyle({
+            color: m.id === selected ? "#ffffff" : color,
+            fillColor: color,
+            fillOpacity: m.state === "CRITICAL" || m.state === "TRIPPED" ? 0.95 : 0.7
+        });
+        mk.bindPopup(popup);
+        placed.push([m.lat, m.lon]);
+    });
+
+    if (!mapFitted && placed.length) {
+        if (placed.length > 1) map.fitBounds(placed, { padding: [40, 40] });
+        else map.setView(placed[0], 15);
+        mapFitted = true;
+    }
+}
+
+function renderFleet(fleet) {
+    const box = $("machines");
+    box.innerHTML = "";
+
+    const bad = fleet.filter(m => ["CRITICAL", "TRIPPED", "OFFLINE"].includes(m.state)).length;
+    $("fleetHint").textContent = `${fleet.length} monitored · ${bad ? bad + " need attention" : "all healthy"}`;
+
+    fleet.forEach(m => {
+        const b = document.createElement("button");
+        b.className = "machine" + (m.id === selected ? " selected" : "");
+        b.addEventListener("click", () => selectMachine(m.id));
+
+        const dot = document.createElement("span");
+        dot.className = "sdot";
+        dot.style.background = COLORS[m.state] || COLORS.OFFLINE;
+
+        const body = document.createElement("div");
+        body.className = "machine-body";
+        const title = document.createElement("div");
+        title.className = "machine-title";
+        title.textContent = m.id;
+        if (m.simulated) {
+            const tag = document.createElement("span");
+            tag.className = "sim-tag";
+            tag.textContent = "SIM";
+            title.append(tag);
+        }
+        const sub = document.createElement("div");
+        sub.className = "machine-sub";
+        sub.textContent = m.site + (m.lat !== null ? ` · ${m.gpsFix ? "GPS" : "fixed location"}` : "");
+        body.append(title, sub);
+
+        const val = document.createElement("div");
+        val.className = "machine-val num";
+        val.textContent = m.lastSeenAgo === null ? "--" : m.vibration.toFixed(2) + " g";
+        const st = document.createElement("small");
+        st.className = "tone-" + m.state;
+        st.textContent = m.state;
+        val.append(st);
+
+        b.append(dot, body, val);
+        box.append(b);
+    });
+
+    renderMap(fleet);
+}
+
+function selectMachine(id) {
+    if (id === selected) return;
+    selected = id;
+    faultSignature = "";
+    const url = new URL(location.href);
+    url.searchParams.set("m", id);
+    history.replaceState(null, "", url);
+    refresh();
+}
+
+function render(d) {
+    const c = d.current;
+    const online = d.edge.online;
+    const hasData = d.edge.lastSeenAgo !== null;
+    const m = d.machine;
+
+    selected = m.id;
+    const state = m.state;
+
+    renderFleet(d.fleet);
+
+    $("heroMachine").innerHTML = "";
+    const idEl = document.createElement("b");
+    idEl.textContent = m.id;
+    $("heroMachine").append(idEl, " · " + m.site);
+    $("btnRestart").style.display = state === "TRIPPED" ? "" : "none";
+    $("pEdgeSub").textContent = `${m.id} · ESP32 + MPU6050` + (m.simulated ? " (simulated)" : "");
+
+    const hLoc = $("hLoc");
+    hLoc.innerHTML = "";
+    if (m.lat !== null) {
+        const a = document.createElement("a");
+        a.href = m.mapsLink;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.style.color = "inherit";
+        a.textContent = `${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}`;
+        hLoc.append(a, m.gpsFix ? ` · GPS (${m.satellites} sats)` : " · fixed");
+    } else {
+        hLoc.textContent = "--";
+    }
+    $("hMotor").textContent = !hasData ? "--" : m.motor + (m.trips ? ` · ${m.trips} trip${m.trips > 1 ? "s" : ""}` : "");
+    $("hMotor").className = "v" + (m.motor === "TRIPPED" ? " tone-CRITICAL" : hasData ? " tone-NORMAL" : "");
+    $("hRecovered").textContent = `${m.recovered} readings`;
+
+    const mode = $("modePill");
+    mode.textContent = d.mode === "DEMO" ? "DEMO MODE" : "LIVE";
+    mode.className = "pill hide-sm " + (d.mode === "DEMO" ? "mode-demo" : "mode-live");
+    $("fogDot").className = "dot on";
+    $("fogText").textContent = "Fog connected";
+
+    renderHero(state, c.vibration);
+
+    $("fCur").textContent = hasData ? Number(c.vibration).toFixed(2) + " g" : "-- g";
+    $("fCur").className = "fact-v num" + (online ? " tone-" + c.status : "");
+    const headroom = CRITICAL - c.vibration;
+    if (state === "TRIPPED") $("fCur").className = "fact-v num";
+    $("fHead").textContent = hasData ? (headroom > 0 ? headroom.toFixed(2) + " g" : "Exceeded") : "-- g";
+    $("fHead").className = "fact-v num" + (hasData && headroom <= 0 ? " tone-CRITICAL" : "");
+    $("fFor").textContent = online ? c.statusFor : "--";
+    $("fAct").textContent = (HERO[state] || HERO.WAITING).action;
+    $("fAct").className = "fact-v" + (["WARNING", "CRITICAL", "TRIPPED"].includes(state) ? " tone-" + state : "");
+
+    setState($("pEdge"), !hasData ? "WAITING" : online ? "ONLINE" : "OFFLINE", online ? "on" : hasData ? "off" : "");
+    setState($("pFog"), "ONLINE", "on");
+    const smsTone = !d.sms.enabled || d.sms.status === "FAILED" ? "off" : "on";
+    setState($("pSms"), d.sms.enabled ? d.sms.status : "DISABLED", smsTone);
+    $("link1").classList.toggle("active", online);
+    $("link2").classList.toggle("active", online && (c.status === "CRITICAL" || state === "TRIPPED"));
+
+    const vib = $("kVib");
+    vib.textContent = Number(c.vibration).toFixed(2);
+    vib.className = "kpi-value num" + (online ? " tone-" + c.status : "");
+
+    $("kSpeed").textContent = c.motorSpeedPercent;
+    $("kSpeedBar").style.width = c.motorSpeedPercent + "%";
+    $("kPwm").textContent = `PWM ${Math.round(c.motorSpeed)} / 255`;
+
+    $("kAvg").textContent = d.stats.avg.toFixed(2);
+    $("kSamples").textContent = `${d.stats.samples.toLocaleString()} samples`;
+
+    $("kMax").textContent = d.stats.max.toFixed(2);
+    $("kMax").className = "kpi-value num" + (d.stats.max >= CRITICAL ? " tone-CRITICAL" : d.stats.max >= WARNING ? " tone-WARNING" : "");
+    $("kMaxTime").textContent = "Recorded at " + d.stats.maxTime;
+
+    $("kAlerts").textContent = d.stats.alerts;
+    $("kAlerts").className = "kpi-value num" + (d.stats.alerts ? " tone-CRITICAL" : "");
+    $("kSms").textContent = `${d.sms.sent} SMS sent`;
+
+    chart.data.labels = d.history.map(p => p.t);
+    chart.data.datasets[0].data = d.history.map(p => p.v);
+    chart.update();
+
+    const hEdge = $("hEdge");
+    hEdge.textContent = !hasData ? "WAITING" : online ? "ONLINE" : "OFFLINE";
+    hEdge.className = "v" + (online ? " tone-NORMAL" : hasData ? " tone-CRITICAL" : "");
+    $("hLast").textContent = hasData ? `${c.timestamp} (${d.edge.lastSeenAgo.toFixed(1)}s ago)` : "--";
+    $("hRate").textContent = d.edge.rate.toFixed(1) + " msg/s";
+    $("hUptime").textContent = d.uptime;
+
+    const hSms = $("hSms");
+    let smsText = d.sms.enabled ? d.sms.status : "DISABLED";
+    if (d.sms.cooldownRemaining > 0) smsText += ` · cooldown ${d.sms.cooldownRemaining}s`;
+    hSms.textContent = smsText;
+    hSms.className = "v" + (smsTone === "off" ? " tone-CRITICAL" : " tone-NORMAL");
+    $("hSmsLast").textContent = d.sms.lastSent;
+
+    const st = d.statusTime;
+    $("dN").style.width = st.NORMAL + "%";
+    $("dW").style.width = st.WARNING + "%";
+    $("dC").style.width = st.CRITICAL + "%";
+    $("pN").textContent = st.NORMAL.toFixed(1) + "%";
+    $("pW").textContent = st.WARNING.toFixed(1) + "%";
+    $("pC").textContent = st.CRITICAL.toFixed(1) + "%";
+    $("kMin").textContent = d.stats.min.toFixed(2) + " g";
+
+    renderEvents(d.events);
+
+    renderFaults(d.faults);
+}
+
+let faultSignature = "";
+
+function fmtG(v) {
+    return v === null || v === undefined ? "--" : Number(v).toFixed(2) + " g";
+}
+
+function renderFaults(f) {
+    $("faultHint").textContent =
+        `${f.preSamples} samples before + ${f.postSamples} after each critical event · CSV`;
+
+    const banner = $("recBanner");
+    if (f.recording) {
+        const r = f.recording;
+        banner.classList.add("show");
+        $("recText").textContent =
+            `Recording fault from ${r.time} — ${r.pre} samples before captured, ` +
+            `collecting after: ${r.post} / ${f.postSamples}`;
+        $("recBar").style.width = (r.post / f.postSamples * 100) + "%";
+    } else {
+        banner.classList.remove("show");
+    }
+
+    const signature = JSON.stringify(f.saved);
+    if (signature === faultSignature) return;
+    faultSignature = signature;
+
+    const body = $("faultRows");
+    body.innerHTML = "";
+
+    if (!f.saved.length) {
+        body.innerHTML =
+            '<tr><td colspan="7" class="empty">No faults recorded yet. ' +
+            'A recording starts automatically when vibration reaches CRITICAL.</td></tr>';
+        return;
+    }
+
+    f.saved.forEach(rec => {
+        const tr = document.createElement("tr");
+
+        const cells = [
+            [rec.time, ""],
+            [fmtG(rec.faultValue), "r tone-CRITICAL"],
+            [fmtG(rec.peak), "r"],
+            [fmtG(rec.preAvg), "r"],
+            [fmtG(rec.postAvg), "r"],
+            [`${rec.pre} / ${rec.post}`, "r"]
+        ];
+
+        cells.forEach(([text, cls], i) => {
+            const td = document.createElement("td");
+            td.className = "num " + cls;
+            td.textContent = text;
+            if (i === 0 && rec.partial) {
+                const tag = document.createElement("span");
+                tag.className = "tag";
+                tag.textContent = "PARTIAL";
+                tag.title = "Edge node went offline before all post-fault samples arrived";
+                td.append(tag);
+            }
+            tr.append(td);
+        });
+
+        const td = document.createElement("td");
+        td.className = "r";
+        const a = document.createElement("a");
+        a.className = "btn";
+        a.href = "/faults/" + encodeURIComponent(rec.file);
+        a.setAttribute("download", rec.file);
+        a.innerHTML = '<svg class="i"><use href="#i-download"/></svg>CSV';
+        td.append(a);
+        tr.append(td);
+
+        body.append(tr);
+    });
+}
+
+async function refresh() {
+    try {
+        const res = await fetch("/api/status?machine=" + encodeURIComponent(selected), { cache: "no-store" });
+        if (!res.ok) throw new Error(res.status);
+        render(await res.json());
+    } catch (err) {
+        $("fogDot").className = "dot off";
+        $("fogText").textContent = "Fog unreachable";
+    }
+}
+
+function tickClock() {
+    $("clock").textContent = new Date().toLocaleTimeString([], { hour12: false });
+}
+
+function toast(msg) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => t.classList.remove("show"), 3000);
+}
+
+$("btnReset").addEventListener("click", async () => {
+    if (!confirm(`Reset session statistics and graph for ${selected}?`)) return;
+    await fetch("/api/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ machine: selected })
+    });
+    toast("Session statistics reset");
+    refresh();
+});
+
+$("btnSms").addEventListener("click", async () => {
+    if (!confirm("Send a real test SMS to the manager's phone via Twilio?")) return;
+    const btn = $("btnSms");
+    btn.disabled = true;
+    try {
+        const res = await fetch("/test-sms", { method: "POST" });
+        const data = await res.json();
+        toast(data.status === "SMS_SENT" ? "Test SMS sent" : "SMS not sent: " + (data.reason || "error"));
+    } catch (e) {
+        toast("SMS request failed");
+    }
+    btn.disabled = false;
+    refresh();
+});
+
+$("btnRestart").addEventListener("click", async () => {
+    if (!confirm(`Restart the motor of ${selected}? Only do this after the pump has been inspected.`)) return;
+    const res = await fetch("/api/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ machine: selected, command: "RESET_TRIP" })
+    });
+    toast(res.ok ? "Restart sent, the edge node will apply it with its next reading" : "Restart not sent");
+    refresh();
+});
+
+buildScale();
+initChart();
+initMap();
+refresh();
+tickClock();
+setInterval(refresh, 1000);
+setInterval(tickClock, 1000);
+</script>
+
+</body>
+</html>

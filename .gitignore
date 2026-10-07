@@ -1,0 +1,20 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# runtime data
+fault_logs/
+
+# local files
+.DS_Store
+*.backup.py
+/screenshots/
+/*.pptx
+
+# edge Wi-Fi credentials
+edge/resqfog_edge/secrets.h

@@ -1,0 +1,921 @@
+"""ResQFog fog server.
+
+Receives telemetry from the ESP32 edge nodes installed on each pump, keeps
+per-machine state for the dashboard, records a window of readings around
+every fault as CSV, and sends SMS alerts through Twilio.
+
+Run:
+    python3 fog_server.py            # real edge nodes, real SMS
+    python3 fog_server.py --fleet    # real PUMP-01 + three simulated pumps
+    python3 fog_server.py --demo     # four simulated pumps, no hardware, no SMS
+"""
+
+import argparse
+import csv
+import math
+import os
+import random
+import re
+import threading
+import time
+from collections import deque
+from datetime import datetime
+
+from dotenv import load_dotenv
+from flask import Flask, jsonify, render_template, request, send_from_directory
+
+load_dotenv()
+
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE = os.getenv("TWILIO_PHONE")
+MANAGER_PHONE = os.getenv("MANAGER_PHONE")
+
+# "detailed" sends machine, site, reading and a map link.
+# "template" sends the fixed text we used during the first SMS tests.
+SMS_MODE = os.getenv("SMS_MODE", "detailed").lower()
+
+# Must match WARNING_THRESHOLD / CRITICAL_THRESHOLD in edge/resqfog_edge/resqfog_edge.ino
+WARNING_THRESHOLD = 1.00
+CRITICAL_THRESHOLD = 1.20
+
+# Edge trips the motor after this many consecutive CRITICAL readings (same as TRIP_AFTER on the ESP32)
+TRIP_AFTER = 3
+
+SMS_COOLDOWN = 60          # seconds between SMS for the same machine
+EDGE_TIMEOUT = 5           # seconds without telemetry before a node is shown offline
+
+HISTORY_SIZE = 120
+EVENT_SIZE = 50
+
+FAULT_PRE_SAMPLES = 50
+FAULT_POST_SAMPLES = 50
+FAULT_LIST_SIZE = 20
+
+DEFAULT_MACHINE = "PUMP-01"
+
+FAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fault_logs")
+DEMO_FAULT_DIR = os.path.join(FAULT_DIR, "demo")   # simulated pumps, kept apart from real data
+
+STATES = ("NORMAL", "WARNING", "CRITICAL")
+
+# Pumping stations used by the simulator (--demo and --fleet).
+# Coordinates are around VIT Vellore so the map looks realistic.
+SIM_SITES = [
+    ("PUMP-01", "VIT Main Sump", 12.96920, 79.15590),
+    ("PUMP-02", "Katpadi Pump House", 12.97160, 79.13710),
+    ("PUMP-03", "Gandhi Nagar OHT", 12.95510, 79.13980),
+    ("PUMP-04", "Sathuvachari Borewell", 12.94070, 79.16480),
+]
+
+
+app = Flask(__name__)
+
+sms_enabled = all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE, MANAGER_PHONE])
+
+if sms_enabled:
+    from twilio.rest import Client
+    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+else:
+    client = None
+
+lock = threading.Lock()
+
+server_start_time = time.time()
+
+demo_mode = False
+
+sms_state = {
+    "status": "READY" if sms_enabled else "DISABLED",
+    "sent": 0,
+    "lastSent": "--",
+}
+
+machines = {}
+
+
+def now_str(epoch=None):
+    return datetime.fromtimestamp(epoch or time.time()).strftime("%H:%M:%S")
+
+
+def classify(vibration):
+    if vibration >= CRITICAL_THRESHOLD:
+        return "CRITICAL"
+    if vibration >= WARNING_THRESHOLD:
+        return "WARNING"
+    return "NORMAL"
+
+
+def format_duration(seconds):
+    seconds = int(seconds)
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def maps_link(lat, lon):
+    return f"https://maps.google.com/?q={lat:.5f},{lon:.5f}"
+
+
+def average(samples):
+    values = [s["vibration"] for s in samples]
+    return round(sum(values) / len(values), 3) if values else None
+
+
+class Machine:
+    """Everything the fog node knows about one pump / edge node."""
+
+    def __init__(self, machine_id, site="", lat=None, lon=None, simulated=False, placeholder=False):
+        self.id = machine_id
+        self.site = site or machine_id
+        self.lat = lat
+        self.lon = lon
+        self.gps_fix = False
+        self.satellites = 0
+        self.simulated = simulated
+        self.placeholder = placeholder
+
+        self.vibration = 0.0
+        self.pwm = 0
+        self.speed_pct = 0
+        self.status = "WAITING"
+        self.motor = "RUNNING"
+        self.timestamp = "--"
+        self.last_seen = 0.0
+        self.status_since = 0.0
+        self.connected = False
+
+        self.history = deque(maxlen=HISTORY_SIZE)
+        self.arrivals = deque(maxlen=50)
+        self.events = deque(maxlen=EVENT_SIZE)
+
+        self.pre_buffer = deque(maxlen=FAULT_PRE_SAMPLES)
+        self.capture = None
+        self.captures = deque(maxlen=FAULT_LIST_SIZE)
+
+        self.pending_command = None
+        self.last_sms = 0.0
+        self.recovered = 0
+
+        self.reset_stats()
+
+    def reset_stats(self):
+        self.samples = 0
+        self.total = 0.0
+        self.peak = 0.0
+        self.peak_time = "--"
+        self.minimum = None
+        self.alerts = 0
+        self.trips = 0
+        self.time_in_state = dict.fromkeys(STATES, 0.0)
+
+    def add_event(self, level, title, detail="", epoch=None):
+        self.events.appendleft({
+            "time": now_str(epoch),
+            "level": level,
+            "title": title,
+            "detail": detail,
+        })
+
+    @property
+    def state(self):
+        """State shown on the dashboard, which also covers offline and tripped."""
+        if not self.last_seen:
+            return "WAITING"
+        if not self.connected:
+            return "OFFLINE"
+        if self.motor == "TRIPPED":
+            return "TRIPPED"
+        return self.status
+
+    def update_location(self, data):
+        if "lat" not in data or "lon" not in data:
+            return
+        try:
+            lat, lon = float(data["lat"]), float(data["lon"])
+        except (TypeError, ValueError):
+            return
+        if lat == 0 and lon == 0:
+            return
+        fix = bool(int(data.get("gps", 0)))
+        if fix and not self.gps_fix:
+            self.add_event("info", "GPS fix acquired", f"{lat:.5f}, {lon:.5f}")
+        self.lat, self.lon = lat, lon
+        self.gps_fix = fix
+        self.satellites = int(data.get("sats", 0) or 0)
+        if data.get("site"):
+            self.site = str(data["site"])[:40]
+
+    def check_timeout(self, now):
+        if self.connected and not self.simulated and now - self.last_seen > EDGE_TIMEOUT:
+            self.connected = False
+            self.add_event("offline", "Edge node offline", f"No telemetry for {EDGE_TIMEOUT}s")
+            if self.capture:
+                self.finalize_capture(partial=True)
+
+    def record_stats(self, vibration, epoch, status):
+        self.samples += 1
+        self.total += vibration
+        if vibration > self.peak:
+            self.peak = vibration
+            self.peak_time = now_str(epoch)
+        if self.minimum is None or vibration < self.minimum:
+            self.minimum = vibration
+        self.history.append({
+            "e": epoch,
+            "t": now_str(epoch),
+            "v": round(vibration, 3),
+            "s": status,
+        })
+
+    def ingest(self, vibration, pwm, status, motor=None):
+        """Handle one live reading from the edge node."""
+        now = time.time()
+
+        status = str(status or "").upper()
+        if status not in STATES:
+            status = classify(vibration)
+
+        previous = self.status
+
+        if previous in STATES and self.last_seen:
+            self.time_in_state[previous] += min(now - self.last_seen, 2.0)
+
+        if not self.connected:
+            self.connected = True
+            self.add_event("info", "Edge node connected", f"{self.id} is sending telemetry")
+
+        self.speed_pct = max(0, min(100, int(pwm / 255 * 100)))
+        self.vibration = vibration
+        self.pwm = pwm
+        self.status = status
+        self.timestamp = now_str(now)
+        self.last_seen = now
+        self.arrivals.append(now)
+
+        if motor in ("RUNNING", "TRIPPED") and motor != self.motor:
+            if motor == "TRIPPED":
+                self.trips += 1
+                self.add_event(
+                    "critical",
+                    "Motor tripped by edge protection",
+                    f"{TRIP_AFTER} consecutive critical readings, power cut at the pump",
+                )
+            else:
+                self.add_event("normal", "Motor restarted", "Trip cleared")
+            self.motor = motor
+
+        self.record_stats(vibration, now, status)
+
+        is_new_fault = status == "CRITICAL" and previous != "CRITICAL"
+
+        if status != previous:
+            self.status_since = now
+            detail = f"{vibration:.2f} g at {self.speed_pct}% speed"
+            if status == "WARNING":
+                self.add_event("warning", "Elevated vibration", detail)
+            elif status == "CRITICAL":
+                self.add_event("critical", "Critical vibration", detail)
+            elif status == "NORMAL" and previous in STATES and self.motor != "TRIPPED":
+                self.add_event("normal", "Returned to normal", f"{vibration:.2f} g")
+
+        self.capture_sample({
+            "epoch": now,
+            "vibration": vibration,
+            "motorSpeed": pwm,
+            "motorSpeedPercent": self.speed_pct,
+            "status": status,
+        }, is_new_fault)
+
+    def ingest_backlog(self, readings):
+        """Readings the edge buffered while the fog server was unreachable."""
+        now = time.time()
+        added = []
+
+        for r in readings:
+            try:
+                vibration = float(r["v"])
+                epoch = now - float(r.get("age", 0)) / 1000.0
+            except (KeyError, TypeError, ValueError):
+                continue
+            status = str(r.get("s", "")).upper()
+            if status not in STATES:
+                status = classify(vibration)
+            self.record_stats(vibration, epoch, status)
+            added.append((epoch, vibration, status))
+
+        if not added:
+            return 0
+
+        # Buffered readings are older than the live ones already in the graph
+        self.history = deque(sorted(self.history, key=lambda p: p["e"]), maxlen=HISTORY_SIZE)
+
+        self.recovered += len(added)
+        start, end = min(a[0] for a in added), max(a[0] for a in added)
+        self.add_event(
+            "info",
+            "Buffered readings recovered",
+            f"{len(added)} readings from {now_str(start)} to {now_str(end)}",
+        )
+
+        worst = max(added, key=lambda a: a[1])
+        if worst[2] == "CRITICAL":
+            self.add_event(
+                "critical",
+                "Critical reading during outage",
+                f"{worst[1]:.2f} g at {now_str(worst[0])}",
+            )
+
+        return len(added)
+
+    # Fault recording: 50 readings before and 50 after each new CRITICAL event
+
+    def capture_sample(self, sample, is_new_fault):
+        if self.capture:
+            self.capture["post"].append(sample)
+            self.capture["peak"] = max(self.capture["peak"], sample["vibration"])
+            if len(self.capture["post"]) >= FAULT_POST_SAMPLES:
+                self.finalize_capture()
+        elif is_new_fault:
+            self.capture = {
+                "fault": sample,
+                "pre": list(self.pre_buffer),
+                "post": [],
+                "peak": sample["vibration"],
+            }
+            self.add_event(
+                "info",
+                "Fault recording started",
+                f"{len(self.pre_buffer)} samples before fault captured",
+            )
+
+        self.pre_buffer.append(sample)
+
+    @property
+    def fault_dir(self):
+        return DEMO_FAULT_DIR if self.simulated else FAULT_DIR
+
+    def finalize_capture(self, partial=False):
+        capture, self.capture = self.capture, None
+        fault = capture["fault"]
+        folder = self.fault_dir
+
+        stamp = datetime.fromtimestamp(fault["epoch"]).strftime("%Y%m%d_%H%M%S")
+        filename = f"fault_{self.id}_{stamp}.csv"
+        suffix = 2
+        while os.path.exists(os.path.join(folder, filename)):
+            filename = f"fault_{self.id}_{stamp}_{suffix}.csv"
+            suffix += 1
+
+        rows = (
+            [("PRE", s) for s in capture["pre"]]
+            + [("FAULT", fault)]
+            + [("POST", s) for s in capture["post"]]
+        )
+
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, filename), "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "machine_id", "sample", "phase", "timestamp", "offset_s",
+                    "vibration_g", "motor_pwm", "motor_speed_pct", "status",
+                ])
+                for index, (phase, s) in enumerate(rows, start=-len(capture["pre"])):
+                    writer.writerow([
+                        self.id,
+                        index,
+                        phase,
+                        datetime.fromtimestamp(s["epoch"]).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                        f"{s['epoch'] - fault['epoch']:.3f}",
+                        f"{s['vibration']:.4f}",
+                        int(s["motorSpeed"]),
+                        s["motorSpeedPercent"],
+                        s["status"],
+                    ])
+        except OSError as e:
+            self.add_event("critical", "Fault recording failed", str(e)[:120])
+            print("Fault recording failed:", e)
+            return
+
+        self.captures.appendleft({
+            "file": filename,
+            "time": datetime.fromtimestamp(fault["epoch"]).strftime("%Y-%m-%d %H:%M:%S"),
+            "faultValue": round(fault["vibration"], 3),
+            "peak": round(capture["peak"], 3),
+            "preAvg": average(capture["pre"]),
+            "postAvg": average(capture["post"]),
+            "pre": len(capture["pre"]),
+            "post": len(capture["post"]),
+            "partial": partial,
+        })
+
+        self.add_event(
+            "info",
+            "Fault recording saved",
+            filename + (" (partial, edge went offline)" if partial else ""),
+        )
+        print("Fault recording saved:", os.path.join(folder, filename))
+
+    def summary(self, now):
+        return {
+            "id": self.id,
+            "site": self.site,
+            "lat": self.lat,
+            "lon": self.lon,
+            "gpsFix": self.gps_fix,
+            "satellites": self.satellites,
+            "state": self.state,
+            "status": self.status,
+            "motor": self.motor,
+            "vibration": round(self.vibration, 3),
+            "speed": self.speed_pct,
+            "online": self.connected,
+            "simulated": self.simulated,
+            "alerts": self.alerts,
+            "lastSeenAgo": round(now - self.last_seen, 1) if self.last_seen else None,
+        }
+
+    def detail(self, now):
+        recent = [t for t in self.arrivals if now - t <= 10]
+        total_state_time = sum(self.time_in_state.values())
+        cooldown = max(0, int(SMS_COOLDOWN - (now - self.last_sms))) if self.last_sms else 0
+
+        return {
+            "machine": self.summary(now) | {
+                "mapsLink": maps_link(self.lat, self.lon) if self.lat is not None else None,
+                "trips": self.trips,
+                "recovered": self.recovered,
+                "smsCooldown": cooldown,
+            },
+            "current": {
+                "vibration": self.vibration,
+                "motorSpeed": self.pwm,
+                "motorSpeedPercent": self.speed_pct,
+                "status": self.status,
+                "timestamp": self.timestamp,
+                "statusFor": format_duration(now - self.status_since) if self.status_since else "--",
+            },
+            "edge": {
+                "online": self.connected,
+                "lastSeenAgo": round(now - self.last_seen, 1) if self.last_seen else None,
+                "rate": round(len(recent) / 10, 1),
+            },
+            "stats": {
+                "samples": self.samples,
+                "avg": self.total / self.samples if self.samples else 0,
+                "max": self.peak,
+                "maxTime": self.peak_time,
+                "min": self.minimum or 0,
+                "alerts": self.alerts,
+            },
+            "statusTime": {
+                s: round(100 * self.time_in_state[s] / total_state_time, 1) if total_state_time else 0
+                for s in STATES
+            },
+            "history": [{"t": p["t"], "v": p["v"]} for p in self.history],
+            "events": list(self.events)[:20],
+            "faults": {
+                "preSamples": FAULT_PRE_SAMPLES,
+                "postSamples": FAULT_POST_SAMPLES,
+                "recording": {
+                    "time": now_str(self.capture["fault"]["epoch"]),
+                    "pre": len(self.capture["pre"]),
+                    "post": len(self.capture["post"]),
+                } if self.capture else None,
+                "saved": list(self.captures),
+            },
+        }
+
+
+def get_machine(machine_id):
+    machine_id = str(machine_id or DEFAULT_MACHINE).strip().upper()[:16] or DEFAULT_MACHINE
+    m = machines.get(machine_id)
+    if m is None:
+        m = machines[machine_id] = Machine(machine_id)
+    m.placeholder = False
+    return m
+
+
+def visible_machines():
+    shown = [m for m in machines.values() if not m.placeholder] or list(machines.values())
+    return sorted(shown, key=lambda m: m.id)
+
+
+def load_saved_captures():
+    """Show fault CSVs from earlier runs on the dashboard after a restart."""
+    for folder in (FAULT_DIR, DEMO_FAULT_DIR):
+        if os.path.isdir(folder):
+            load_captures_from(folder)
+
+
+def load_captures_from(folder):
+    files = sorted(
+        (f for f in os.listdir(folder) if f.startswith("fault_") and f.endswith(".csv")),
+        key=lambda f: re.findall(r"\d{8}_\d{6}", f)[-1:],
+    )
+
+    for filename in files:
+        # fault_PUMP-01_20261007_075007.csv, or fault_20261007_075007.csv from before machine IDs
+        match = re.match(r"fault_(.+?)_\d{8}_\d{6}(_\d+)?\.csv$", filename)
+        machine_id = match.group(1) if match else DEFAULT_MACHINE
+
+        try:
+            with open(os.path.join(folder, filename), newline="") as f:
+                rows = list(csv.DictReader(f))
+            fault = next(r for r in rows if r["phase"] == "FAULT")
+            pre = [{"vibration": float(r["vibration_g"])} for r in rows if r["phase"] == "PRE"]
+            post = [{"vibration": float(r["vibration_g"])} for r in rows if r["phase"] == "POST"]
+        except (OSError, KeyError, ValueError, StopIteration):
+            continue
+
+        m = machines.get(machine_id)
+        if m is None or m.fault_dir != folder:
+            continue
+
+        m.captures.appendleft({
+            "file": filename,
+            "time": fault["timestamp"][:19],
+            "faultValue": float(fault["vibration_g"]),
+            "peak": max(float(r["vibration_g"]) for r in rows),
+            "preAvg": average(pre),
+            "postAvg": average(post),
+            "pre": len(pre),
+            "post": len(post),
+            "partial": len(post) < FAULT_POST_SAMPLES,
+        })
+
+
+def sms_text(m):
+    if SMS_MODE == "template":
+        return "sms_internal_alerts"
+    text = (
+        f"ResQFog ALERT: {m.id} ({m.site}) CRITICAL "
+        f"{m.vibration:.2f} g at {now_str()}."
+    )
+    if m.lat is not None:
+        text += f" Location: {maps_link(m.lat, m.lon)}"
+    return text
+
+
+def send_sms(m, body=None):
+    """Called without the lock held (the Twilio request can take a few seconds)."""
+    now = time.time()
+
+    if not sms_enabled:
+        print("SMS disabled: Twilio credentials missing in .env")
+        return False
+
+    with lock:
+        if m is not None and now - m.last_sms < SMS_COOLDOWN:
+            sms_state["status"] = "COOLDOWN"
+            m.add_event("sms", "SMS skipped", f"Cooldown active for {m.id}")
+            return False
+        if m is not None:
+            m.last_sms = now
+        body = body or sms_text(m)
+
+    try:
+        message = client.messages.create(body=body, from_=TWILIO_PHONE, to=MANAGER_PHONE)
+    except Exception as e:
+        with lock:
+            sms_state["status"] = "FAILED"
+            if m is not None:
+                m.last_sms = 0
+                m.add_event("critical", "SMS failed", str(e)[:120])
+        print("SMS FAILED:", e)
+        return False
+
+    with lock:
+        sms_state["status"] = "SENT"
+        sms_state["sent"] += 1
+        sms_state["lastSent"] = now_str()
+        if m is not None:
+            m.add_event("sms", "SMS alert sent", f"Manager notified about {m.id}")
+
+    print("SMS sent:", message.sid, "|", body)
+    return True
+
+
+def handle_alert(m, vibration, pwm, status, motor=None, allow_sms=True):
+    with lock:
+        if time.time() - m.last_seen > 0.5:
+            m.ingest(vibration, pwm, status, motor)
+        m.alerts += 1
+        m.add_event("critical", "Critical alert received", f"{m.id} escalated to fog")
+
+        if status != "CRITICAL":
+            return False
+
+        if not allow_sms:
+            m.add_event("sms", "SMS skipped", "Simulated machine, no SMS sent")
+            return False
+
+    return send_sms(m)
+
+
+# ---------------------------------------------------------------- routes
+
+@app.route("/")
+def dashboard():
+    return render_template(
+        "dashboard.html",
+        warning=WARNING_THRESHOLD,
+        critical=CRITICAL_THRESHOLD,
+        trip_after=TRIP_AFTER,
+    )
+
+
+@app.route("/api/status")
+def api_status():
+    now = time.time()
+    wanted = request.args.get("machine", "").upper()
+
+    with lock:
+        for m in machines.values():
+            m.check_timeout(now)
+
+        fleet = visible_machines()
+        selected = machines.get(wanted) if wanted in machines else None
+        if selected is None or selected not in fleet:
+            selected = (
+                next((m for m in fleet if m.state in ("CRITICAL", "TRIPPED")), None)
+                or next((m for m in fleet if not m.simulated), fleet[0])
+            )
+
+        detail = selected.detail(now)
+
+        sms_status = sms_state["status"]
+        if sms_status == "COOLDOWN" and all(now - m.last_sms >= SMS_COOLDOWN for m in machines.values()):
+            detail = selected.detail(now)
+
+        sms_status = sms_state["status"] = "READY"
+
+        return jsonify({
+            "mode": "DEMO" if demo_mode else "LIVE",
+            "serverTime": now_str(now),
+            "uptime": format_duration(now - server_start_time),
+            "thresholds": {"warning": WARNING_THRESHOLD, "critical": CRITICAL_THRESHOLD},
+            "sms": {
+                "enabled": sms_enabled,
+                "status": sms_status,
+                "sent": sms_state["sent"],
+                "lastSent": sms_state["lastSent"],
+                "cooldownRemaining": detail["machine"]["smsCooldown"],
+            },
+            "fleet": [m.summary(now) for m in fleet],
+            **detail,
+        })
+
+
+@app.route("/faults/<path:filename>")
+def download_fault(filename):
+    folder = DEMO_FAULT_DIR if os.path.exists(os.path.join(DEMO_FAULT_DIR, filename)) else FAULT_DIR
+    return send_from_directory(folder, filename, as_attachment=True, mimetype="text/csv")
+
+
+@app.route("/api/reset", methods=["POST"])
+def api_reset():
+    data = request.get_json(silent=True) or {}
+    with lock:
+        m = machines.get(str(data.get("machine", "")).upper())
+        if m is None:
+            return jsonify({"status": "ERROR", "error": "unknown machine"}), 404
+        m.reset_stats()
+        m.history.clear()
+        m.arrivals.clear()
+        m.recovered = 0
+        m.add_event("info", "Session reset", "Statistics cleared from dashboard")
+    return jsonify({"status": "RESET"})
+
+
+@app.route("/api/command", methods=["POST"])
+def api_command():
+    """Queue a command for an edge node. It is delivered in the reply to its next /data post."""
+    data = request.get_json(silent=True) or {}
+    command = str(data.get("command", "")).upper()
+
+    if command != "RESET_TRIP":
+        return jsonify({"status": "ERROR", "error": "unsupported command"}), 400
+
+    with lock:
+        m = machines.get(str(data.get("machine", "")).upper())
+        if m is None:
+            return jsonify({"status": "ERROR", "error": "unknown machine"}), 404
+        if m.motor != "TRIPPED":
+            return jsonify({"status": "ERROR", "error": "motor is not tripped"}), 409
+        m.pending_command = command
+        m.add_event("info", "Restart requested", "Sent to edge node with next reply")
+
+    return jsonify({"status": "QUEUED"})
+
+
+def take_command(m):
+    command, m.pending_command = m.pending_command, None
+    return command or "NONE"
+
+
+@app.route("/data", methods=["POST"])
+def receive_data():
+    try:
+        data = request.get_json(force=True)
+        vibration = float(data.get("vibration", 0))
+        pwm = float(data.get("motorSpeed", 0))
+    except Exception as e:
+        print("Telemetry error:", e)
+        return jsonify({"status": "ERROR", "error": str(e)}), 400
+
+    with lock:
+        m = get_machine(data.get("id"))
+        m.update_location(data)
+        m.ingest(vibration, pwm, data.get("status", ""), data.get("motor"))
+        command = take_command(m)
+
+    return jsonify({"status": "RECEIVED", "fog": "ONLINE", "command": command})
+
+
+@app.route("/data/batch", methods=["POST"])
+def receive_batch():
+    try:
+        data = request.get_json(force=True)
+        readings = list(data.get("readings", []))
+    except Exception as e:
+        print("Batch error:", e)
+        return jsonify({"status": "ERROR", "error": str(e)}), 400
+
+    with lock:
+        m = get_machine(data.get("id"))
+        m.update_location(data)
+        count = m.ingest_backlog(readings)
+        command = take_command(m)
+
+    print(f"Recovered {count} buffered readings from {m.id}")
+    return jsonify({"status": "RECEIVED", "accepted": count, "command": command})
+
+
+@app.route("/alert", methods=["POST"])
+def alert():
+    try:
+        data = request.get_json(force=True)
+        vibration = float(data.get("vibration", 0))
+        pwm = float(data.get("motorSpeed", 0))
+    except Exception as e:
+        print("Alert error:", e)
+        return jsonify({"status": "ERROR", "error": str(e)}), 400
+
+    print("CRITICAL ALERT RECEIVED:", data)
+
+    with lock:
+        m = get_machine(data.get("id"))
+        m.update_location(data)
+
+    status = str(data.get("status", "")).upper()
+    sms_sent = handle_alert(m, vibration, pwm, status, data.get("motor"))
+
+    return jsonify({
+        "status": "CRITICAL",
+        "fog": "RECEIVED",
+        "sms": "SENT" if sms_sent else "NOT_SENT",
+    })
+
+
+@app.route("/test-sms", methods=["GET", "POST"])
+def test_sms():
+    body = None if SMS_MODE == "template" else "ResQFog test message: SMS alerts are working."
+    if send_sms(None, body or "sms_internal_alerts"):
+        return jsonify({"status": "SMS_SENT"})
+    return jsonify({"status": "SMS_FAILED", "reason": sms_state["status"]}), 500
+
+
+# ---------------------------------------------------------------- simulator
+
+class SimulatedPump:
+    """Imitates the ESP32 firmware for one pump: readings, alerts and the motor trip."""
+
+    def __init__(self, machine, phase, fault_every, fault_offset):
+        self.m = machine
+        self.phase = phase
+        self.fault_every = fault_every
+        self.fault_offset = fault_offset
+        self.critical_count = 0
+        self.tripped_at = None
+        self.previous = "NORMAL"
+
+    def step(self, t):
+        m = self.m
+
+        if self.tripped_at is not None:
+            # Waiting for a restart from the dashboard; a technician resets it after 30 s anyway
+            if m.pending_command == "RESET_TRIP" or t - self.tripped_at > 30:
+                m.pending_command = None
+                self.tripped_at = None
+                self.critical_count = 0
+            else:
+                m.ingest(random.uniform(0.01, 0.04), 0, "NORMAL", "TRIPPED")
+                return
+
+        pwm = int(160 + 80 * math.sin((t + self.phase) / 25))
+
+        # Normal running grows with speed and stays well under the warning level
+        vibration = WARNING_THRESHOLD * (0.15 + pwm / 255 * 0.45) + random.uniform(-0.05, 0.05)
+
+        cycle = (t + self.fault_offset) % self.fault_every
+        if 40 <= cycle < 48:
+            # developing fault: climbs through the WARNING band
+            vibration = WARNING_THRESHOLD + (cycle - 40) / 8 * (CRITICAL_THRESHOLD - WARNING_THRESHOLD) \
+                + random.uniform(-0.03, 0.03)
+        elif 48 <= cycle < 53:
+            # severe: stays CRITICAL long enough for the edge to trip the motor
+            vibration = CRITICAL_THRESHOLD + random.uniform(0.03, 0.3)
+
+        vibration = max(0.02, vibration)
+        status = classify(vibration)
+
+        self.critical_count = self.critical_count + 1 if status == "CRITICAL" else 0
+        motor = "RUNNING"
+        if self.critical_count >= TRIP_AFTER:
+            motor = "TRIPPED"
+            self.tripped_at = t
+
+        m.ingest(vibration, pwm, status, motor)
+
+        if status == "CRITICAL" and self.previous != "CRITICAL":
+            m.alerts += 1
+            m.add_event("critical", "Critical alert received", f"{m.id} escalated to fog")
+            m.add_event("sms", "SMS skipped", "Simulated machine, no SMS sent")
+
+        self.previous = status
+
+
+def run_simulator(pumps):
+    t = 0
+    while True:
+        t += 1
+        with lock:
+            for pump in pumps:
+                pump.step(t)
+        time.sleep(1)
+
+
+def create_simulated_pumps(skip_first):
+    # Different fault cycles so the pumps do not all fail together
+    schedules = [(0, 140, 30), (17, 170, 95), (41, 110, 10), (63, 200, 150)]
+    pumps = []
+    for (machine_id, site, lat, lon), (phase, every, offset) in zip(SIM_SITES, schedules):
+        if skip_first and machine_id == DEFAULT_MACHINE:
+            continue
+        m = Machine(machine_id, site, lat, lon, simulated=True)
+        m.gps_fix = True
+        m.satellites = random.randint(6, 10)
+        machines[machine_id] = m
+        pumps.append(SimulatedPump(m, phase, every, offset))
+    return pumps
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="ResQFog fog server")
+    parser.add_argument("--demo", action="store_true",
+                        help="simulate four pumps (no hardware, no SMS)")
+    parser.add_argument("--fleet", action="store_true",
+                        help="real ESP32 as PUMP-01 plus three simulated pumps")
+    parser.add_argument("--port", type=int, default=5001)
+    args = parser.parse_args()
+
+    demo_mode = args.demo
+
+    if args.demo or args.fleet:
+        pumps = create_simulated_pumps(skip_first=args.fleet)
+        threading.Thread(target=run_simulator, args=(pumps,), daemon=True).start()
+
+    if not args.demo:
+        # Shown as "waiting" until the real ESP32 sends its first reading
+        _, site, lat, lon = SIM_SITES[0]
+        machines[DEFAULT_MACHINE] = Machine(DEFAULT_MACHINE, site, lat, lon, placeholder=not args.fleet)
+
+    load_saved_captures()
+
+    print()
+    print("================================")
+    print("        RESQFOG FOG SERVER")
+    print("================================")
+    if args.demo:
+        print("MODE: DEMO (4 simulated pumps, SMS disabled)")
+    elif args.fleet:
+        print("MODE: FLEET (real PUMP-01 + 3 simulated pumps)")
+    else:
+        print("MODE: LIVE")
+    if not sms_enabled:
+        print("WARNING: Twilio credentials missing - SMS disabled")
+    print(f"Thresholds: warning {WARNING_THRESHOLD:.2f} g, critical {CRITICAL_THRESHOLD:.2f} g")
+    print()
+    print(f"Dashboard:  http://127.0.0.1:{args.port}")
+    print(f"Telemetry:  POST /data, /data/batch, /alert")
+    print(f"Fault CSVs: {FAULT_DIR}")
+    print("================================")
+    print()
+
+    app.run(host="0.0.0.0", port=args.port, debug=False, threaded=True)
