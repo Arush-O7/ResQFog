@@ -1,0 +1,93 @@
+{
+  "dataset": "CWRU Bearing Data Center, drive-end accelerometer, 0-3 hp",
+  "preprocessing": "184 Hz low-pass, resampled to 500 Hz, 256-sample windows",
+  "features": [
+    "band_0_20",
+    "band_20_40",
+    "band_40_60",
+    "band_60_80",
+    "band_80_100",
+    "band_100_125",
+    "band_125_150",
+    "band_150_175",
+    "band_175_200",
+    "band_200_250"
+  ],
+  "windows": {
+    "normal_train": 357,
+    "normal_test": 136,
+    "fault": 1369
+  },
+  "isolation_forest": {
+    "trained_on": "normal windows only",
+    "threshold": 0.5539,
+    "false_alarm_rate": 0.007,
+    "detection_rate": 0.977,
+    "precision": 0.999,
+    "f1": 0.988,
+    "roc_auc": 0.999,
+    "by_fault": {
+      "inner 0.007 in": 1.0,
+      "ball 0.007 in": 0.914,
+      "outer 0.007 in": 1.0,
+      "inner 0.014 in": 0.934,
+      "ball 0.014 in": 0.987,
+      "outer 0.014 in": 1.0,
+      "inner 0.021 in": 0.993,
+      "ball 0.021 in": 0.974,
+      "outer 0.021 in": 0.993
+    },
+    "by_size": {
+      "0.007 in": 0.972,
+      "0.014 in": 0.974,
+      "0.021 in": 0.987
+    },
+    "by_type": {
+      "inner": 0.976,
+      "ball": 0.958,
+      "outer": 0.998
+    },
+    "by_load": {
+      "0 hp": 0.971,
+      "1 hp": 0.977,
+      "2 hp": 0.968,
+      "3 hp": 0.994
+    }
+  },
+  "random_forest_reference": {
+    "split": "train on 0-2 hp, test on 3 hp",
+    "accuracy": 0.874,
+    "classes": [
+      "normal",
+      "inner",
+      "ball",
+      "outer"
+    ],
+    "confusion": [
+      [
+        104,
+        0,
+        39,
+        0
+      ],
+      [
+        0,
+        101,
+        14,
+        0
+      ],
+      [
+        0,
+        2,
+        111,
+        1
+      ],
+      [
+        0,
+        2,
+        3,
+        109
+      ]
+    ]
+  }
+}
