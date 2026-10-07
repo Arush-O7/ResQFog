@@ -1,139 +1,135 @@
 # ResQFog
 
-Edge–fog–cloud condition monitoring for water-supply pumping stations.
+Edge–fog–cloud condition monitoring for water-supply pumping stations, with an ML anomaly model trained on real bearing data.
 
-ResQFog is our project for BCSE313L (Fundamentals of Fog and Edge Computing) at VIT. An ESP32 with an MPU6050 accelerometer is mounted on each pump motor. It measures vibration every second, sounds a local alarm and trips the motor if the vibration stays critical, and sends its readings to a Flask "fog" server. The fog server shows every pump on a live dashboard with a map, records the readings around each fault, and sends an SMS to the maintenance engineer through Twilio.
+ResQFog is our project for BCSE313L (Fundamentals of Fog and Edge Computing) at VIT. An ESP32 with an MPU6050 accelerometer is mounted on each pump motor. Every second it records a short vibration window, raises a local alarm and trips the motor if the vibration stays critical, and sends the reading to a Flask "fog" server. The fog server runs an Isolation Forest on the vibration window to warn about abnormal patterns before the threshold is crossed, shows all pumps on one dashboard, records the readings around every fault, and sends an SMS through Twilio.
 
-![Dashboard](docs/images/dashboard_fleet.png)
+![Dashboard](docs/images/dashboard.png)
 
 ## Why pumping stations
 
-Borewell pumps, sump pumps and the pumps that fill overhead tanks are usually spread over a few kilometres and nobody is stationed at them. Most mechanical faults (bearing wear, impeller imbalance, misalignment, cavitation) show up first as higher vibration, but at an unmanned site they are only noticed when the water stops. The network at these sites is also unreliable, so we wanted the protection to work on the ESP32 itself and the fog/cloud parts to add visibility on top of it.
+Borewell pumps, sump pumps and the pumps that fill overhead tanks are usually spread out and nobody is stationed at them. Most mechanical faults (bearing wear, impeller imbalance, misalignment) show up first as a change in vibration, but at an unmanned site they are only noticed when the water stops. The network at these sites is also unreliable, so the protection runs on the ESP32 itself, and the fog and cloud add early warning and visibility on top.
 
-The node itself is not pump-specific and can be put on any rotating machine.
+## How detection works
 
-## What it does
+**Layer 1 – thresholds on the ESP32** (works without any network)
 
-- **Edge alarm and motor trip** – the ESP32 classifies every reading. CRITICAL turns on the buzzer, and 3 CRITICAL readings in a row cut motor power. None of this needs the network.
-- **Pump identification** – every message carries the pump ID, site name and GPS position (NEO-6M). Without a GPS fix the node sends the coordinates set at installation.
-- **SMS with location** – on a new CRITICAL event the fog server sends an SMS with the pump ID, reading and a Google Maps link (one SMS per minute per pump at most).
-- **Remote restart** – after a trip, the dashboard can send a restart command. It goes back to the ESP32 in the reply to its next reading. Locally, turning the speed knob to zero also clears the trip.
-- **Offline buffer** – if the fog server can't be reached, the ESP32 keeps up to 300 readings (5 minutes) and uploads them later with their age, so the graph has no gap.
-- **Fault recordings** – 50 readings before and 50 after every new fault are saved as a CSV in `fault_logs/`.
-- **Fleet dashboard** – map of all pumps, per-pump status, live graph, statistics, event log, system health. Works on a phone too.
+| State | v = \|√(ax²+ay²+az²) − 1 g\| | Response |
+|---|---|---|
+| NORMAL | < 1.00 g | – |
+| WARNING | 1.00 – 1.20 g | logged, amber on the dashboard |
+| CRITICAL | ≥ 1.20 g | buzzer, SMS, fault recording |
+| TRIPPED | 3 CRITICAL readings in a row | motor power cut; restart by turning the knob to zero or from the dashboard |
 
-## Architecture
+**Layer 2 – ML anomaly detection on the fog server**
 
-```
-  EDGE (one per pump)                 FOG (laptop / PC)                 CLOUD
-  ESP32 + MPU6050 + GPS   --/data-->  Flask server        --HTTPS-->   Twilio SMS --> engineer
-  buzzer, LCD, motor      --/alert->  dashboard + map
-  offline buffer          --/data/batch->  fault CSVs
-                          <-- restart command (in reply) --
-```
+- The ESP32 records 256 readings at 500 Hz (MPU6050 with its 184 Hz low-pass filter) and sends them with each reading.
+- The fog server computes the energy in 10 frequency bands (0–250 Hz) and scores it with an Isolation Forest.
+- An anomaly is raised when 3 of the last 5 windows are abnormal. If the vibration level is still normal at that point, the dashboard shows an early warning.
+
+The model is trained on the [CWRU bearing dataset](https://engineering.case.edu/bearingdatacenter), after filtering and resampling it to what the MPU6050 can actually measure. On held-out data:
+
+| Isolation Forest (trained on normal data only) | |
+|---|---|
+| Fault windows detected | 97.7 % |
+| False alarms on normal windows | 0.7 % |
+| Precision / F1 / ROC AUC | 0.999 / 0.988 / 0.999 |
+| Random Forest reference, trained on 0–2 hp and tested on 3 hp | 87.4 % accuracy |
+
+Full numbers are in [ml/results.json](ml/results.json). Shape features such as kurtosis and crest factor only reached about 15 % detection at this bandwidth, which is why the model uses band energies.
+
+![Detection panel and event log](docs/images/detection_and_events.png)
+
+Every pump is different, so a real pump is **calibrated** with the "Calibrate ML" button: it fits the same kind of model to about 2 minutes of that pump's normal running. Simulated pumps in demo mode replay real CWRU windows and use the CWRU model.
+
+## Other features
+
+- **Fleet dashboard** – card per pump, live graph, statistics, event log, system health; works on a phone.
+- **SMS** – pump ID, site and reading, at most one SMS per minute per pump.
+- **Offline buffer** – if the fog server can't be reached, the ESP32 keeps up to 300 readings (5 minutes) and uploads them later.
+- **Fault recordings** – 50 readings before and 50 after every new fault, saved as CSV in `fault_logs/`.
 
 ## Hardware
 
 | Component | Connection to ESP32 |
 |---|---|
-| MPU6050 accelerometer (±2 g) | SDA GPIO 21, SCL GPIO 22 (address 0x68) |
+| MPU6050 accelerometer | SDA GPIO 21, SCL GPIO 22 (address 0x68) |
 | 16×2 LCD with I²C backpack | same I²C bus (address 0x27) |
-| NEO-6M GPS | GPS TX → GPIO 16, GPS RX → GPIO 17, 9600 baud |
 | Potentiometer (speed / trip reset) | GPIO 34 |
 | L298N motor driver | ENA GPIO 25, IN1 GPIO 26, IN2 GPIO 27 |
 | Buzzer | GPIO 32 |
 
-The GPS is optional. Without it (or indoors, where it usually gets no fix) the node uses `SITE_LAT` / `SITE_LON` from the sketch.
+About ₹1,050 per node with hobby modules.
 
 ## Setup
 
 ### Edge node
 
 1. Open `edge/resqfog_edge/resqfog_edge.ino` in Arduino IDE (ESP32 board package installed).
-2. Install the libraries **LiquidCrystal_I2C** and **TinyGPSPlus** from the Library Manager.
+2. Install **LiquidCrystal_I2C** from the Library Manager.
 3. Copy `secrets.example.h` to `secrets.h` in the same folder and set the Wi-Fi name, password and `FOG_SERVER` (the IP of the laptop running the fog server; on macOS `ipconfig getifaddr en0`).
-4. Set `MACHINE_ID`, `SITE_NAME`, `SITE_LAT` and `SITE_LON` for the pump.
-5. Upload and open the Serial Monitor at 115200.
+4. Set `MACHINE_ID` and `SITE_NAME` for the pump, upload, and open the Serial Monitor at 115200.
 
 ### Fog server
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env      # fill in the Twilio values
+cp .env.example .env      # Twilio values (optional)
 python3 fog_server.py
 ```
 
-Open `http://127.0.0.1:5001` (or `http://<laptop-ip>:5001` from a phone on the same network).
-
-Run modes:
+Open `http://127.0.0.1:5001`, or `http://<laptop-ip>:5001` from a phone on the same network. Then select the pump and press **Calibrate ML** while it runs normally (change the speed a little during the 2 minutes).
 
 | Command | What it runs |
 |---|---|
 | `python3 fog_server.py` | Real edge nodes, real SMS |
-| `python3 fog_server.py --fleet` | Real ESP32 as PUMP-01 plus three simulated pumps on the map |
+| `python3 fog_server.py --fleet` | Real ESP32 as PUMP-01 plus three simulated pumps |
 | `python3 fog_server.py --demo` | Four simulated pumps, no hardware, no SMS |
 
-If Twilio credentials are missing the server still runs, with SMS shown as disabled. Set `SMS_MODE=template` in `.env` to send the short fixed text we used during the first SMS tests instead of the detailed message.
+### Retraining the model
 
-The thresholds are in two places and must match: `WARNING_THRESHOLD` / `CRITICAL_THRESHOLD` at the top of `fog_server.py` and in the sketch (currently 1.00 g and 1.20 g).
+```bash
+python3 ml/train.py
+```
+
+This downloads the CWRU files it needs (about 100 MB) into `ml/data/`, and writes `ml/model.joblib`, `ml/results.json` and `ml/replay.npz`.
+
+The thresholds are in two places and must match: the top of `fog_server.py` and the sketch (1.00 g and 1.20 g).
 
 ## Fog server API
 
-| Endpoint | Used by | Purpose |
-|---|---|---|
-| `POST /data` | ESP32 | One reading (id, site, vibration, motorSpeed, status, motor, lat, lon, gps, sats). Reply may contain `"command": "RESET_TRIP"` |
-| `POST /data/batch` | ESP32 | Readings buffered during an outage, each with its age in ms |
-| `POST /alert` | ESP32 | Critical alert, triggers the SMS |
-| `GET /api/status?machine=PUMP-01` | Dashboard | Fleet list plus details of one pump |
-| `POST /api/command` | Dashboard | `{"machine": "PUMP-01", "command": "RESET_TRIP"}` |
-| `POST /api/reset` | Dashboard | Clear statistics for one pump |
-| `GET /faults/<file>` | Dashboard | Download a fault CSV |
-| `GET/POST /test-sms` | Dashboard | Send a test SMS |
-
-## Detection
-
-```
-v = | sqrt(ax² + ay² + az²) − 1 g |
-```
-
-| State | v | Response |
-|---|---|---|
-| NORMAL | < 1.00 g | – |
-| WARNING | 1.00 – 1.20 g | logged, amber on the dashboard |
-| CRITICAL | ≥ 1.20 g | buzzer, SMS, fault recording |
-| TRIPPED | 3 CRITICAL readings in a row | motor power cut |
-
-On our test rig normal running averages about 0.1 g with short peaks around 1.0 g. With the ±2 g range the largest possible reading is about 2.46 g (all three axes at full scale), so readings close to that usually mean the sensor was knocked.
+| Endpoint | Purpose |
+|---|---|
+| `POST /data` | One reading: id, site, vibration, motorSpeed, status, motor, and `w` (256 values in milli-g). The reply may contain `"command": "RESET_TRIP"` |
+| `POST /data/batch` | Readings buffered during an outage, each with its age in ms |
+| `POST /alert` | Critical alert, triggers the SMS |
+| `GET /api/status?machine=PUMP-01` | All pumps plus details of one pump, including its ML state |
+| `POST /api/calibrate` | `{"machine": "PUMP-01"}` – fit the ML model to this pump |
+| `POST /api/command` | `{"machine": "PUMP-01", "command": "RESET_TRIP"}` |
+| `POST /api/reset` | Clear statistics for one pump |
+| `GET /faults/<file>` | Download a fault CSV |
 
 ## Project structure
 
 ```
-fog_server.py                 Flask fog server, simulator
-templates/dashboard.html      dashboard (HTML/CSS/JS)
-static/                       Chart.js and Leaflet, served locally
-edge/resqfog_edge/            ESP32 firmware
-docs/                         presentation, screenshots, sample data
-fault_logs/                   fault CSVs (created at runtime, not in git)
+fog_server.py               Flask fog server and pump simulator
+templates/dashboard.html    dashboard
+static/                     Chart.js, served locally
+ml/features.py              band-energy features (used for training and live)
+ml/train.py                 downloads CWRU data, trains and evaluates the model
+ml/model.joblib             trained model
+ml/results.json             evaluation results
+edge/resqfog_edge/          ESP32 firmware
+docs/                       presentation, screenshots, related work, sample data
 ```
 
-## Screenshots
+## Limitations
 
-| Warning state | Live graph (warning → critical → trip → restart) |
-|---|---|
-| ![Warning](docs/images/warning.png) | ![Graph](docs/images/graph.png) |
+- The MPU6050 bandwidth (184 Hz) cannot capture the high-frequency impacts of early bearing faults; the model relies on low-frequency band energy.
+- In CWRU, healthy and faulty bearings were recorded separately, so part of the difference may come from the recordings themselves (see Smith and Randall, 2015).
+- The model has not yet been tested on faults induced on our own rig. That is the next step, together with a current sensor for dry-running detection.
 
-Phone view and fault recordings: [docs/images](docs/images).
-
-`docs/sample_data/` has a real fault recording from our rig (101 rows, from before the `machine_id` column was added).
-
-## Limitations and next steps
-
-- One reading per second gives the vibration level, not its frequency content, so the threshold cannot tell different faults apart.
-- Thresholds have to be tuned per pump.
-- GPS needs a view of the sky.
-- Map tiles come from OpenStreetMap, so the map needs internet; the rest of the dashboard works offline.
-
-Next we want to add a current sensor (dry running, overload) and a GSM module for sites without Wi-Fi. Phase 2 replaces the thresholds with an autoencoder on the ESP32 and a Random Forest on the fog server that names the fault type. The details are in the presentation in `docs/`.
+Comparison with existing work: [docs/related_work.md](docs/related_work.md).
 
 ## Team
 
