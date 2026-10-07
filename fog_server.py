@@ -1,7 +1,8 @@
 """ResQFog fog server.
 
 Receives telemetry from the ESP32 edge nodes installed on each pump, keeps
-per-machine state for the dashboard, records a window of readings around
+per-machine state for the dashboard, runs the ML anomaly model on the
+vibration window that comes with each reading, records the readings around
 every fault as CSV, and sends SMS alerts through Twilio.
 
 Run:
@@ -16,13 +17,21 @@ import math
 import os
 import random
 import re
+import sys
 import threading
 import time
 from collections import deque
 from datetime import datetime
 
+import joblib
+import numpy as np
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, send_from_directory
+from sklearn.ensemble import IsolationForest
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(BASE_DIR, "ml"))
+from features import WINDOW, window_features, window_rms  # noqa: E402
 
 load_dotenv()
 
@@ -31,7 +40,7 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE = os.getenv("TWILIO_PHONE")
 MANAGER_PHONE = os.getenv("MANAGER_PHONE")
 
-# "detailed" sends machine, site, reading and a map link.
+# "detailed" sends pump ID, site and reading.
 # "template" sends the fixed text we used during the first SMS tests.
 SMS_MODE = os.getenv("SMS_MODE", "detailed").lower()
 
@@ -54,18 +63,25 @@ FAULT_LIST_SIZE = 20
 
 DEFAULT_MACHINE = "PUMP-01"
 
-FAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fault_logs")
+FAULT_DIR = os.path.join(BASE_DIR, "fault_logs")
 DEMO_FAULT_DIR = os.path.join(FAULT_DIR, "demo")   # simulated pumps, kept apart from real data
 
 STATES = ("NORMAL", "WARNING", "CRITICAL")
 
-# Pumping stations used by the simulator (--demo and --fleet).
-# Coordinates are around VIT Vellore so the map looks realistic.
+# ML anomaly detection (see ml/train.py)
+ML_MODEL_PATH = os.path.join(BASE_DIR, "ml", "model.joblib")
+ML_PUMP_DIR = os.path.join(BASE_DIR, "ml", "pumps")     # per-pump models from calibration
+CALIBRATION_WINDOWS = 120     # about 2 minutes of normal running
+ML_VOTES = 5                  # look at the last 5 windows...
+ML_NEEDED = 3                 # ...and call it an anomaly if 3 of them are abnormal
+ML_MIN_SPEED = 10             # % - below this the motor is treated as stopped
+
+# Pumping stations used by the simulator (--demo and --fleet)
 SIM_SITES = [
-    ("PUMP-01", "VIT Main Sump", 12.96920, 79.15590),
-    ("PUMP-02", "Katpadi Pump House", 12.97160, 79.13710),
-    ("PUMP-03", "Gandhi Nagar OHT", 12.95510, 79.13980),
-    ("PUMP-04", "Sathuvachari Borewell", 12.94070, 79.16480),
+    ("PUMP-01", "VIT Main Sump"),
+    ("PUMP-02", "Katpadi Pump House"),
+    ("PUMP-03", "Gandhi Nagar OHT"),
+    ("PUMP-04", "Sathuvachari Borewell"),
 ]
 
 
@@ -93,6 +109,12 @@ sms_state = {
 
 machines = {}
 
+try:
+    base_model = joblib.load(ML_MODEL_PATH)
+except (OSError, ValueError) as e:
+    print("ML model not loaded (run python3 ml/train.py):", e)
+    base_model = None
+
 
 def now_str(epoch=None):
     return datetime.fromtimestamp(epoch or time.time()).strftime("%H:%M:%S")
@@ -117,10 +139,6 @@ def format_duration(seconds):
     return f"{secs}s"
 
 
-def maps_link(lat, lon):
-    return f"https://maps.google.com/?q={lat:.5f},{lon:.5f}"
-
-
 def average(samples):
     values = [s["vibration"] for s in samples]
     return round(sum(values) / len(values), 3) if values else None
@@ -129,13 +147,9 @@ def average(samples):
 class Machine:
     """Everything the fog node knows about one pump / edge node."""
 
-    def __init__(self, machine_id, site="", lat=None, lon=None, simulated=False, placeholder=False):
+    def __init__(self, machine_id, site="", simulated=False, placeholder=False):
         self.id = machine_id
         self.site = site or machine_id
-        self.lat = lat
-        self.lon = lon
-        self.gps_fix = False
-        self.satellites = 0
         self.simulated = simulated
         self.placeholder = placeholder
 
@@ -160,6 +174,14 @@ class Machine:
         self.pending_command = None
         self.last_sms = 0.0
         self.recovered = 0
+
+        # ML: simulated pumps replay CWRU data, so they use the CWRU model.
+        # A real pump gets its own model once it has been calibrated.
+        self.ml_model = base_model if simulated else load_pump_model(machine_id)
+        self.ml_calibration = None
+        self.ml_flags = deque(maxlen=ML_VOTES)
+        self.ml_score = None
+        self.ml_state = "NORMAL" if self.ml_model else "NOT CALIBRATED"
 
         self.reset_stats()
 
@@ -192,23 +214,78 @@ class Machine:
             return "TRIPPED"
         return self.status
 
-    def update_location(self, data):
-        if "lat" not in data or "lon" not in data:
-            return
-        try:
-            lat, lon = float(data["lat"]), float(data["lon"])
-        except (TypeError, ValueError):
-            return
-        if lat == 0 and lon == 0:
-            return
-        fix = bool(int(data.get("gps", 0)))
-        if fix and not self.gps_fix:
-            self.add_event("info", "GPS fix acquired", f"{lat:.5f}, {lon:.5f}")
-        self.lat, self.lon = lat, lon
-        self.gps_fix = fix
-        self.satellites = int(data.get("sats", 0) or 0)
+    def update_site(self, data):
         if data.get("site"):
             self.site = str(data["site"])[:40]
+
+    # ML anomaly detection on the vibration window sent with each reading
+
+    def start_calibration(self):
+        self.ml_calibration = []
+        self.ml_flags.clear()
+        self.ml_state = "CALIBRATING"
+        self.add_event("info", "ML calibration started", f"Collecting {CALIBRATION_WINDOWS} windows of normal running")
+
+    def score_window(self, window):
+        if self.motor == "TRIPPED" or self.speed_pct < ML_MIN_SPEED:
+            if self.ml_state in ("NORMAL", "ANOMALY"):
+                self.ml_state = "MOTOR STOPPED"
+                self.ml_flags.clear()   # start fresh votes after a restart
+            return
+        if self.ml_state == "MOTOR STOPPED":
+            self.ml_state = "NORMAL"
+
+        features = window_features(window)
+
+        if self.ml_calibration is not None:
+            self.ml_calibration.append(features)
+            if len(self.ml_calibration) >= CALIBRATION_WINDOWS:
+                self.finish_calibration()
+            return
+
+        if not self.ml_model:
+            return
+
+        score = float(-self.ml_model["model"].score_samples([features])[0])
+        self.ml_score = score
+        self.ml_flags.append(score > self.ml_model["threshold"])
+
+        new_state = "ANOMALY" if sum(self.ml_flags) >= ML_NEEDED else "NORMAL"
+        if new_state != self.ml_state:
+            if new_state == "ANOMALY":
+                detail = "Vibration pattern differs from normal running"
+                if self.status == "NORMAL":
+                    detail += ", before the threshold alarm"
+                self.add_event("warning", "ML anomaly detected", detail)
+            elif self.ml_state == "ANOMALY":
+                self.add_event("normal", "ML pattern back to normal")
+        self.ml_state = new_state
+
+    def finish_calibration(self):
+        data = np.array(self.ml_calibration)
+        model = IsolationForest(n_estimators=100, random_state=0).fit(data)
+        # 95th percentile per window; the 3-of-5 vote keeps false alarms near 0.1 %
+        threshold = float(np.quantile(-model.score_samples(data), 0.95))
+        self.ml_model = {"model": model, "threshold": threshold, "source": f"{self.id} calibration"}
+        self.ml_calibration = None
+        self.ml_state = "NORMAL"
+        try:
+            os.makedirs(ML_PUMP_DIR, exist_ok=True)
+            joblib.dump(self.ml_model, os.path.join(ML_PUMP_DIR, f"{self.id}.joblib"))
+        except OSError as e:
+            print("Could not save pump model:", e)
+        self.add_event("info", "ML calibration finished", f"Model fitted on {len(data)} windows")
+
+    def ml_summary(self):
+        return {
+            "state": self.ml_state,
+            "score": round(self.ml_score, 3) if self.ml_score is not None else None,
+            "threshold": round(self.ml_model["threshold"], 3) if self.ml_model else None,
+            "model": ("CWRU bearing data" if self.ml_model.get("source") == "CWRU" else "calibrated on this pump")
+            if self.ml_model else None,
+            "progress": len(self.ml_calibration) if self.ml_calibration is not None else None,
+            "needed": CALIBRATION_WINDOWS,
+        }
 
     def check_timeout(self, now):
         if self.connected and not self.simulated and now - self.last_seen > EDGE_TIMEOUT:
@@ -232,7 +309,7 @@ class Machine:
             "s": status,
         })
 
-    def ingest(self, vibration, pwm, status, motor=None):
+    def ingest(self, vibration, pwm, status, motor=None, window=None):
         """Handle one live reading from the edge node."""
         now = time.time()
 
@@ -290,6 +367,9 @@ class Machine:
             "motorSpeedPercent": self.speed_pct,
             "status": status,
         }, is_new_fault)
+
+        if window is not None and len(window) == WINDOW:
+            self.score_window(window)
 
     def ingest_backlog(self, readings):
         """Readings the edge buffered while the fog server was unreachable."""
@@ -425,10 +505,6 @@ class Machine:
         return {
             "id": self.id,
             "site": self.site,
-            "lat": self.lat,
-            "lon": self.lon,
-            "gpsFix": self.gps_fix,
-            "satellites": self.satellites,
             "state": self.state,
             "status": self.status,
             "motor": self.motor,
@@ -438,6 +514,7 @@ class Machine:
             "simulated": self.simulated,
             "alerts": self.alerts,
             "lastSeenAgo": round(now - self.last_seen, 1) if self.last_seen else None,
+            "ml": self.ml_state,
         }
 
     def detail(self, now):
@@ -447,7 +524,6 @@ class Machine:
 
         return {
             "machine": self.summary(now) | {
-                "mapsLink": maps_link(self.lat, self.lon) if self.lat is not None else None,
                 "trips": self.trips,
                 "recovered": self.recovered,
                 "smsCooldown": cooldown,
@@ -479,6 +555,7 @@ class Machine:
             },
             "history": [{"t": p["t"], "v": p["v"]} for p in self.history],
             "events": list(self.events)[:20],
+            "ml": self.ml_summary(),
             "faults": {
                 "preSamples": FAULT_PRE_SAMPLES,
                 "postSamples": FAULT_POST_SAMPLES,
@@ -490,6 +567,25 @@ class Machine:
                 "saved": list(self.captures),
             },
         }
+
+
+def load_pump_model(machine_id):
+    path = os.path.join(ML_PUMP_DIR, f"{machine_id}.joblib")
+    try:
+        return joblib.load(path) if os.path.exists(path) else None
+    except (OSError, ValueError):
+        return None
+
+
+def parse_window(data):
+    """The edge sends its window as integers in milli-g."""
+    raw = data.get("w")
+    if not isinstance(raw, list) or len(raw) != WINDOW:
+        return None
+    try:
+        return [float(v) / 1000.0 for v in raw]
+    except (TypeError, ValueError):
+        return None
 
 
 def get_machine(machine_id):
@@ -553,13 +649,7 @@ def load_captures_from(folder):
 def sms_text(m):
     if SMS_MODE == "template":
         return "sms_internal_alerts"
-    text = (
-        f"ResQFog ALERT: {m.id} ({m.site}) CRITICAL "
-        f"{m.vibration:.2f} g at {now_str()}."
-    )
-    if m.lat is not None:
-        text += f" Location: {maps_link(m.lat, m.lon)}"
-    return text
+    return f"ResQFog ALERT: {m.id} ({m.site}) CRITICAL {m.vibration:.2f} g at {now_str()}. Inspect the pump."
 
 
 def send_sms(m, body=None):
@@ -714,6 +804,20 @@ def api_command():
     return jsonify({"status": "QUEUED"})
 
 
+@app.route("/api/calibrate", methods=["POST"])
+def api_calibrate():
+    """Fit the ML model to this pump's own normal running (about 2 minutes)."""
+    data = request.get_json(silent=True) or {}
+    with lock:
+        m = machines.get(str(data.get("machine", "")).upper())
+        if m is None:
+            return jsonify({"status": "ERROR", "error": "unknown machine"}), 404
+        if m.simulated:
+            return jsonify({"status": "ERROR", "error": "simulated pumps use the CWRU model"}), 409
+        m.start_calibration()
+    return jsonify({"status": "CALIBRATING", "windows": CALIBRATION_WINDOWS})
+
+
 def take_command(m):
     command, m.pending_command = m.pending_command, None
     return command or "NONE"
@@ -731,8 +835,8 @@ def receive_data():
 
     with lock:
         m = get_machine(data.get("id"))
-        m.update_location(data)
-        m.ingest(vibration, pwm, data.get("status", ""), data.get("motor"))
+        m.update_site(data)
+        m.ingest(vibration, pwm, data.get("status", ""), data.get("motor"), parse_window(data))
         command = take_command(m)
 
     return jsonify({"status": "RECEIVED", "fog": "ONLINE", "command": command})
@@ -749,7 +853,7 @@ def receive_batch():
 
     with lock:
         m = get_machine(data.get("id"))
-        m.update_location(data)
+        m.update_site(data)
         count = m.ingest_backlog(readings)
         command = take_command(m)
 
@@ -771,7 +875,7 @@ def alert():
 
     with lock:
         m = get_machine(data.get("id"))
-        m.update_location(data)
+        m.update_site(data)
 
     status = str(data.get("status", "")).upper()
     sms_sent = handle_alert(m, vibration, pwm, status, data.get("motor"))
@@ -793,8 +897,24 @@ def test_sms():
 
 # ---------------------------------------------------------------- simulator
 
+def load_replay():
+    try:
+        data = np.load(os.path.join(BASE_DIR, "ml", "replay.npz"))
+        return data["normal"], data["fault"]
+    except (OSError, KeyError):
+        return None, None
+
+
+REPLAY_NORMAL, REPLAY_FAULT = load_replay()
+
+
 class SimulatedPump:
-    """Imitates the ESP32 firmware for one pump: readings, alerts and the motor trip."""
+    """Imitates the ESP32 firmware for one pump: readings, alerts and the motor trip.
+
+    The vibration window sent with each reading is a real CWRU recording:
+    a healthy bearing normally, and a faulty one from 15 s before the
+    threshold alarm, so the ML model can be seen warning early.
+    """
 
     def __init__(self, machine, phase, fault_every, fault_offset):
         self.m = machine
@@ -817,6 +937,8 @@ class SimulatedPump:
             else:
                 m.ingest(random.uniform(0.01, 0.04), 0, "NORMAL", "TRIPPED")
                 return
+
+        fault_developing = 25 <= (t + self.fault_offset) % self.fault_every < 53
 
         pwm = int(160 + 80 * math.sin((t + self.phase) / 25))
 
@@ -841,7 +963,12 @@ class SimulatedPump:
             motor = "TRIPPED"
             self.tripped_at = t
 
-        m.ingest(vibration, pwm, status, motor)
+        window = None
+        if REPLAY_NORMAL is not None:
+            source = REPLAY_FAULT if fault_developing else REPLAY_NORMAL
+            window = source[random.randrange(len(source))]
+
+        m.ingest(vibration, pwm, status, motor, window)
 
         if status == "CRITICAL" and self.previous != "CRITICAL":
             m.alerts += 1
@@ -865,12 +992,10 @@ def create_simulated_pumps(skip_first):
     # Different fault cycles so the pumps do not all fail together
     schedules = [(0, 140, 30), (17, 170, 95), (41, 110, 10), (63, 200, 150)]
     pumps = []
-    for (machine_id, site, lat, lon), (phase, every, offset) in zip(SIM_SITES, schedules):
+    for (machine_id, site), (phase, every, offset) in zip(SIM_SITES, schedules):
         if skip_first and machine_id == DEFAULT_MACHINE:
             continue
-        m = Machine(machine_id, site, lat, lon, simulated=True)
-        m.gps_fix = True
-        m.satellites = random.randint(6, 10)
+        m = Machine(machine_id, site, simulated=True)
         machines[machine_id] = m
         pumps.append(SimulatedPump(m, phase, every, offset))
     return pumps
@@ -893,8 +1018,7 @@ if __name__ == "__main__":
 
     if not args.demo:
         # Shown as "waiting" until the real ESP32 sends its first reading
-        _, site, lat, lon = SIM_SITES[0]
-        machines[DEFAULT_MACHINE] = Machine(DEFAULT_MACHINE, site, lat, lon, placeholder=not args.fleet)
+        machines[DEFAULT_MACHINE] = Machine(DEFAULT_MACHINE, SIM_SITES[0][1], placeholder=not args.fleet)
 
     load_saved_captures()
 
@@ -911,6 +1035,7 @@ if __name__ == "__main__":
     if not sms_enabled:
         print("WARNING: Twilio credentials missing - SMS disabled")
     print(f"Thresholds: warning {WARNING_THRESHOLD:.2f} g, critical {CRITICAL_THRESHOLD:.2f} g")
+    print("ML model:  ", "loaded (CWRU)" if base_model else "missing - run python3 ml/train.py")
     print()
     print(f"Dashboard:  http://127.0.0.1:{args.port}")
     print(f"Telemetry:  POST /data, /data/batch, /alert")

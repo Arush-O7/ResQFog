@@ -4,9 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ResQFog Monitor</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='leaflet/leaflet.css') }}">
 <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
-<script src="{{ url_for('static', filename='leaflet/leaflet.js') }}"></script>
 
 <style>
 :root {
@@ -107,7 +105,6 @@ svg.i {
 }
 
 .row { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
-.row-fleet { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
 .row-hero { grid-template-columns: 2fr 1fr; }
 .row-kpi { grid-template-columns: repeat(5, 1fr); }
 .row-main { grid-template-columns: 2.1fr 1fr; }
@@ -183,21 +180,7 @@ svg.i {
 .btn.btn-danger { color: #fff; background: var(--critical); border-color: var(--critical); }
 .btn.btn-danger:hover { color: #fff; filter: brightness(1.1); }
 
-.map-box { height: 300px; border-radius: 11px; overflow: hidden; background: var(--surface-2); }
-.leaflet-container { background: var(--surface-2); font: inherit; }
-/* OSM tiles are light; invert them so the map matches the dark theme */
-.leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.9) contrast(.85) saturate(.6); }
-.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--surface-2); color: var(--text); }
-.leaflet-popup-content { margin: 10px 12px; font-size: 12px; line-height: 1.5; }
-.leaflet-control-attribution { font-size: 9px; }
-.leaflet-tooltip {
-    background: var(--surface); color: var(--text); border: 1px solid var(--border);
-    box-shadow: none; font-size: 11px; font-weight: 600; padding: 2px 6px;
-}
-.leaflet-tooltip-right:before { border-right-color: var(--border); }
-.map-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
-
-.machines { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; max-height: 330px; overflow-y: auto; }
+.machines { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
 .machine {
     display: flex; align-items: center; gap: 12px;
     padding: 11px 12px;
@@ -220,7 +203,7 @@ svg.i {
 .scale { margin-top: 0; }
 
 .hero-facts {
-    display: grid; grid-template-columns: repeat(4, 1fr);
+    display: grid; grid-template-columns: repeat(5, 1fr);
     border-top: 1px solid var(--border-soft);
     padding-top: 18px;
 }
@@ -485,7 +468,7 @@ a.btn { text-decoration: none; }
 }
 
 @media (max-width: 980px) {
-    .row-hero, .row-main, .row-fleet { grid-template-columns: minmax(0, 1fr); }
+    .row-hero, .row-main { grid-template-columns: minmax(0, 1fr); }
     .row-kpi { grid-template-columns: repeat(2, 1fr); }
 }
 
@@ -495,10 +478,9 @@ a.btn { text-decoration: none; }
     .container { padding: 16px; gap: 14px; }
     .row { gap: 14px; }
     .row-kpi, .row-bottom { grid-template-columns: minmax(0, 1fr); }
-    .map-box { height: 240px; }
     .hero-top { flex-direction: column; align-items: flex-start; }
     .hero-facts { grid-template-columns: 1fr 1fr; row-gap: 16px; }
-    .fact:nth-child(3) { padding-left: 0; border-left: none; }
+    .fact:nth-child(odd) { padding-left: 0; border-left: none; }
     .chart-box { height: 260px; }
 }
 </style>
@@ -543,20 +525,11 @@ a.btn { text-decoration: none; }
 
 <main class="container">
 
-    <section class="row row-fleet">
+    <section class="row">
 
         <div class="panel">
             <div class="panel-head">
-                <h3>Pump Network</h3>
-                <span class="hint" id="mapHint">Location reported by each edge node</span>
-            </div>
-            <div class="map-box" id="map"></div>
-            <div class="map-note" id="mapNote"></div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Machines</h3>
+                <h3>Pumps</h3>
                 <span class="hint" id="fleetHint">--</span>
             </div>
             <div class="machines" id="machines"></div>
@@ -595,6 +568,7 @@ a.btn { text-decoration: none; }
             <div class="hero-facts">
                 <div class="fact"><div class="fact-k">Current reading</div><div class="fact-v num" id="fCur">-- g</div></div>
                 <div class="fact"><div class="fact-k">Headroom to critical</div><div class="fact-v num" id="fHead">-- g</div></div>
+                <div class="fact"><div class="fact-k">ML health</div><div class="fact-v" id="fMl">--</div></div>
                 <div class="fact"><div class="fact-k">In this state</div><div class="fact-v num" id="fFor">--</div></div>
                 <div class="fact"><div class="fact-k">Recommended action</div><div class="fact-v" id="fAct">--</div></div>
             </div>
@@ -708,7 +682,6 @@ a.btn { text-decoration: none; }
             </div>
 
             <div class="metric"><span class="k">Edge node</span><span class="v" id="hEdge">WAITING</span></div>
-            <div class="metric"><span class="k">Location</span><span class="v num" id="hLoc">--</span></div>
             <div class="metric"><span class="k">Motor</span><span class="v" id="hMotor">--</span></div>
             <div class="metric"><span class="k">Last telemetry</span><span class="v num" id="hLast">--</span></div>
             <div class="metric"><span class="k">Data rate</span><span class="v num" id="hRate">0.0 msg/s</span></div>
@@ -742,19 +715,21 @@ a.btn { text-decoration: none; }
 
         <div class="panel">
             <div class="panel-head">
-                <h3>Detection Rules</h3>
-                <span class="hint">Threshold model</span>
+                <h3>Detection</h3>
+                <span class="hint">Edge thresholds + fog ML</span>
             </div>
 
             <div class="metric"><span class="k"><span class="swatch" style="background:var(--normal)"></span>Normal</span><span class="v num">&lt; {{ '%.2f'|format(warning) }} g</span></div>
             <div class="metric"><span class="k"><span class="swatch" style="background:var(--warning)"></span>Warning</span><span class="v num">{{ '%.2f'|format(warning) }} – {{ '%.2f'|format(critical) }} g</span></div>
             <div class="metric"><span class="k"><span class="swatch" style="background:var(--critical)"></span>Critical</span><span class="v num">≥ {{ '%.2f'|format(critical) }} g</span></div>
-            <div class="metric"><span class="k">Critical action</span><span class="v">Buzzer + SMS + fault recording</span></div>
             <div class="metric"><span class="k">Protection</span><span class="v">Motor trip after {{ trip_after }} critical readings</span></div>
+            <div class="metric"><span class="k">ML model</span><span class="v" id="mlModel">--</span></div>
+            <div class="metric"><span class="k">ML anomaly score</span><span class="v num" id="mlScore">--</span></div>
 
             <div class="actions" style="margin-top:16px">
                 <button class="btn" id="btnReset"><svg class="i"><use href="#i-refresh"/></svg>Reset session</button>
                 <button class="btn" id="btnSms"><svg class="i"><use href="#i-send"/></svg>Send test SMS</button>
+                <button class="btn" id="btnCalibrate"><svg class="i"><use href="#i-activity"/></svg>Calibrate ML</button>
             </div>
         </div>
 
@@ -1026,59 +1001,6 @@ function renderEvents(events) {
     });
 }
 
-let map = null;
-const markers = {};
-let mapFitted = false;
-
-function initMap() {
-    if (typeof L === "undefined") {
-        $("map").innerHTML = '<div class="empty">Map library not loaded</div>';
-        return;
-    }
-    map = L.map("map", { zoomControl: true, attributionControl: true }).setView([12.96, 79.15], 13);
-    const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: "&copy; OpenStreetMap contributors"
-    }).addTo(map);
-    tiles.on("tileerror", () => {
-        $("mapNote").textContent = "Map tiles need internet. Machine positions are still listed on the right.";
-    });
-}
-
-function renderMap(fleet) {
-    if (!map) return;
-    const placed = [];
-
-    fleet.forEach(m => {
-        if (m.lat === null || m.lon === null) return;
-        const color = COLORS[m.state] || COLORS.OFFLINE;
-        const popup =
-            `<b>${m.id}</b> · ${m.site}<br>${m.state} · ${m.vibration.toFixed(2)} g<br>` +
-            `${m.lat.toFixed(5)}, ${m.lon.toFixed(5)} (${m.gpsFix ? "GPS" : "fixed"})`;
-
-        let mk = markers[m.id];
-        if (!mk) {
-            mk = markers[m.id] = L.circleMarker([m.lat, m.lon], { radius: 9, weight: 3 }).addTo(map);
-            mk.on("click", () => selectMachine(m.id));
-            mk.bindTooltip(m.id, { permanent: true, direction: "right", offset: [10, 0], className: "" });
-        }
-        mk.setLatLng([m.lat, m.lon]);
-        mk.setStyle({
-            color: m.id === selected ? "#ffffff" : color,
-            fillColor: color,
-            fillOpacity: m.state === "CRITICAL" || m.state === "TRIPPED" ? 0.95 : 0.7
-        });
-        mk.bindPopup(popup);
-        placed.push([m.lat, m.lon]);
-    });
-
-    if (!mapFitted && placed.length) {
-        if (placed.length > 1) map.fitBounds(placed, { padding: [40, 40] });
-        else map.setView(placed[0], 15);
-        mapFitted = true;
-    }
-}
-
 function renderFleet(fleet) {
     const box = $("machines");
     box.innerHTML = "";
@@ -1108,7 +1030,7 @@ function renderFleet(fleet) {
         }
         const sub = document.createElement("div");
         sub.className = "machine-sub";
-        sub.textContent = m.site + (m.lat !== null ? ` · ${m.gpsFix ? "GPS" : "fixed location"}` : "");
+        sub.textContent = m.site + " · ML " + m.ml.toLowerCase();
         body.append(title, sub);
 
         const val = document.createElement("div");
@@ -1122,8 +1044,21 @@ function renderFleet(fleet) {
         b.append(dot, body, val);
         box.append(b);
     });
+}
 
-    renderMap(fleet);
+const ML_TONE = { NORMAL: "tone-NORMAL", ANOMALY: "tone-WARNING", CALIBRATING: "", "NOT CALIBRATED": "tone-WAITING", "MOTOR STOPPED": "tone-WAITING" };
+
+function renderMl(ml, m, live) {
+    let text = ml.state;
+    if (ml.state === "CALIBRATING") text = `Calibrating ${ml.progress}/${ml.needed}`;
+    $("fMl").textContent = live ? text : "--";
+    $("fMl").className = "fact-v " + (live ? ML_TONE[ml.state] || "" : "");
+    $("mlModel").textContent = ml.model ? ml.model : "not calibrated";
+    $("mlScore").textContent = ml.score === null ? "--" : `${ml.score.toFixed(3)} (limit ${ml.threshold.toFixed(3)})`;
+    $("mlScore").className = "v num" + (ml.score !== null && ml.score > ml.threshold ? " tone-WARNING" : "");
+    const btn = $("btnCalibrate");
+    btn.style.display = m.simulated ? "none" : "";
+    btn.disabled = ml.state === "CALIBRATING";
 }
 
 function selectMachine(id) {
@@ -1154,19 +1089,7 @@ function render(d) {
     $("btnRestart").style.display = state === "TRIPPED" ? "" : "none";
     $("pEdgeSub").textContent = `${m.id} · ESP32 + MPU6050` + (m.simulated ? " (simulated)" : "");
 
-    const hLoc = $("hLoc");
-    hLoc.innerHTML = "";
-    if (m.lat !== null) {
-        const a = document.createElement("a");
-        a.href = m.mapsLink;
-        a.target = "_blank";
-        a.rel = "noopener";
-        a.style.color = "inherit";
-        a.textContent = `${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}`;
-        hLoc.append(a, m.gpsFix ? ` · GPS (${m.satellites} sats)` : " · fixed");
-    } else {
-        hLoc.textContent = "--";
-    }
+    renderMl(d.ml, m, hasData && online);
     $("hMotor").textContent = !hasData ? "--" : m.motor + (m.trips ? ` · ${m.trips} trip${m.trips > 1 ? "s" : ""}` : "");
     $("hMotor").className = "v" + (m.motor === "TRIPPED" ? " tone-CRITICAL" : hasData ? " tone-NORMAL" : "");
     $("hRecovered").textContent = `${m.recovered} readings`;
@@ -1188,6 +1111,18 @@ function render(d) {
     $("fFor").textContent = online ? c.statusFor : "--";
     $("fAct").textContent = (HERO[state] || HERO.WAITING).action;
     $("fAct").className = "fact-v" + (["WARNING", "CRITICAL", "TRIPPED"].includes(state) ? " tone-" + state : "");
+
+    if (state === "NORMAL" && d.ml.state === "ANOMALY") {
+        $("hero").dataset.state = "WARNING";
+        $("hero").dataset.tone = "WARNING";
+        $("heroBadge").dataset.tone = "WARNING";
+        $("heroBadge").textContent = "ML WARNING";
+        $("heroIcon").querySelector("use").setAttribute("href", "#i-alert");
+        $("heroTitle").textContent = "Early Warning from ML Model";
+        $("heroDesc").textContent = "Vibration level is still normal, but its pattern no longer matches normal running.";
+        $("fAct").textContent = "Plan an inspection";
+        $("fAct").className = "fact-v tone-WARNING";
+    }
 
     setState($("pEdge"), !hasData ? "WAITING" : online ? "ONLINE" : "OFFLINE", online ? "on" : hasData ? "off" : "");
     setState($("pFog"), "ONLINE", "on");
@@ -1383,9 +1318,19 @@ $("btnRestart").addEventListener("click", async () => {
     refresh();
 });
 
+$("btnCalibrate").addEventListener("click", async () => {
+    if (!confirm(`Calibrate the ML model on ${selected}? Run the pump normally for about 2 minutes, changing the speed a little.`)) return;
+    const res = await fetch("/api/calibrate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ machine: selected })
+    });
+    toast(res.ok ? "Calibration started" : "Calibration not started");
+    refresh();
+});
+
 buildScale();
 initChart();
-initMap();
 refresh();
 tickClock();
 setInterval(refresh, 1000);
