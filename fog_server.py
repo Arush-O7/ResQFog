@@ -41,12 +41,13 @@ from features import WINDOW, window_features, window_rms  # noqa: E402
 load_dotenv()
 
 # Alerts are sent as normal SMS, so the receiving phone needs no app.
+#   android:       (default) an Android phone with a SIM running the free,
+#                  open-source SMSGate app (sms-gate.app) in Local Server mode
+#                  on the same Wi-Fi - sends the full alert text
+#   gsm:           an A7670C / SIM800L GSM module on a USB serial port - full text
 #   circuitdigest: free CircuitDigest Cloud SMS API (India, 100 SMS/month,
 #                  fixed templates with two short fields, OTP-verified numbers)
-#   android:       an Android phone running the free "SMS Gateway for Android"
-#                  app (local server mode) on the same Wi-Fi - any text
-#   gsm:           a SIM800L / A7670 GSM module on a USB serial port - any text
-SMS_BACKEND = os.getenv("SMS_BACKEND", "circuitdigest").strip().lower()
+SMS_BACKEND = os.getenv("SMS_BACKEND", "android").strip().lower()
 CIRCUITDIGEST_API_KEY = os.getenv("CIRCUITDIGEST_API_KEY", "").strip()
 CIRCUITDIGEST_URL = os.getenv("CIRCUITDIGEST_URL", "https://www.circuitdigest.cloud/api/v1/send_sms").strip()
 # numbers to alert; falls back to MANAGER_PHONE from the earlier Twilio setup

@@ -58,7 +58,7 @@ Every pump is different, so a real pump is **calibrated** with the "Calibrate ML
   Inspect the pump. Motor trips if this lasts 3 readings.
   ```
 
-  SMS APIs in India only allow pre-registered templates. With the default CircuitDigest service the alert fills the two fields of a maintenance template (pump and issue) plus a location template; the Android-phone and GSM-module options send the full text above from an ordinary SIM.
+  SMS APIs in India only allow pre-registered templates, so the alert is sent from an ordinary SIM instead: by default through an Android phone running the free SMSGate app, or through a GSM module. A template-based CircuitDigest option is also included.
 - **Offline buffer** – if the fog server can't be reached, the ESP32 keeps up to 300 readings (5 minutes) and uploads them later.
 - **Fault recordings** – 50 readings before and 50 after every new fault, saved as CSV in `fault_logs/`.
 
@@ -104,20 +104,24 @@ python3 fog_server.py
 
 ### SMS alerts
 
-Put the numbers to alert in `SMS_TO` in `.env` (with country code, several separated by commas; if empty, `MANAGER_PHONE` is used), then pick how the SMS is sent:
+Put the numbers to alert in `SMS_TO` in `.env` (with country code, several separated by commas; if empty, `MANAGER_PHONE` is used), then set up the sender.
 
-**CircuitDigest Cloud (default, no extra hardware).** A free SMS API for makers in India. Sign up at [circuitdigest.cloud](https://www.circuitdigest.cloud), verify each receiving number with the OTP (up to 5 numbers), and copy the API key into `CIRCUITDIGEST_API_KEY`. It uses fixed templates with two short fields, so an alert arrives as one or two SMS:
+**SMSGate on an Android phone (default).** Any Android 5+ phone with a SIM and an SMS pack works; an old phone is fine. Only this phone needs the app, the people receiving get a normal SMS.
+
+1. Download and install the APK from [sms-gate.app](https://sms-gate.app) (free, open source, no account needed).
+2. Open the app, turn on **Local Server** and keep the phone on the same Wi-Fi as the fog computer.
+3. Copy the address shown in the app (for example `http://192.168.1.20:8080`), the username and the password into `SMS_GATEWAY_URL`, `SMS_GATEWAY_USER` and `SMS_GATEWAY_PASSWORD`.
+
+The phone sends the full alert shown above from its own SIM, so the text is not limited to a template. Prepaid plans in India usually include about 100 SMS a day, which is plenty with one alert per pump and type per minute.
+
+**GSM module (permanent installation).** Connect an A7670C (4G) or SIM800L module with a SIM to the fog computer through a USB-serial adapter, set `SMS_BACKEND=gsm` and `GSM_PORT` (for example `/dev/tty.usbserial-0001`, or `COM3` on Windows). The SIM800L only works on 2G, so it needs an Airtel or Vi SIM; the A7670C also works with Jio. Needs `pip install pyserial`. Long alerts are sent as two SMS parts.
+
+**CircuitDigest Cloud (no phone or module).** A free SMS API for makers in India: set `SMS_BACKEND=circuitdigest`, sign up at [circuitdigest.cloud](https://www.circuitdigest.cloud), verify each receiving number with the OTP (up to 5) and copy the API key into `CIRCUITDIGEST_API_KEY`. It only sends fixed templates with two short fields, so the alert arrives in their wording without the map link, and the free plan allows 100 SMS a month (alerts limited to one every 10 minutes):
 
 ```
 The pump PUMP01 VIT Main Sump requires maintenance. Detected issue: critical vibration 1.31g.
 The device pump PUMP01 is currently located at 12.96920 79.15590.
 ```
-
-The free plan allows 100 SMS a month, so alerts of the same type for one pump are limited to one every 10 minutes (`ALERT_COOLDOWN`).
-
-**Android phone (full text).** Install the free, open-source *SMS Gateway for Android* app ([sms-gate.app](https://sms-gate.app)) on a phone with a SIM and an SMS pack, turn on **Local Server**, and copy the address (for example `http://192.168.1.20:8080`), username and password into `SMS_GATEWAY_URL`, `SMS_GATEWAY_USER` and `SMS_GATEWAY_PASSWORD`, with `SMS_BACKEND=android`. The phone must be on the same Wi-Fi as the fog computer. This sends the full alert shown above, including the Google Maps link.
-
-**GSM module (full text).** Connect a SIM800L or A7670 module with a SIM to the fog computer through a USB-serial adapter, set `SMS_BACKEND=gsm` and `GSM_PORT` (for example `/dev/tty.usbserial-0001`, or `COM3` on Windows). Needs `pip install pyserial`. Long alerts are sent as two SMS parts.
 
 Check the settings with `python3 fog_server.py --test-sms` or the **Send test SMS** button on the dashboard.
 
