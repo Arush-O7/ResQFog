@@ -94,6 +94,8 @@ python3 ml/train.py
 
 This downloads the CWRU files it needs (about 100 MB) into `ml/data/`, and writes `ml/model.joblib`, `ml/results.json` and `ml/replay.npz`.
 
+`python3 ml/experiments.py` runs the extra experiments (feature ablation, detector comparison, 10 seeds, leave-one-load-out, 12 kHz vs MPU6050 bandwidth, timing) and writes `ml/experiments.json`.
+
 The thresholds are in two places and must match: the top of `fog_server.py` and the sketch (1.00 g and 1.20 g).
 
 ## Fog server API

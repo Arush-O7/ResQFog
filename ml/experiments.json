@@ -1,0 +1,165 @@
+{
+  "windows": {
+    "normal_train": 357,
+    "normal_test": 136,
+    "fault": 1369
+  },
+  "E1_features": {
+    "shape (crest, kurtosis, skewness, shape, impulse)": {
+      "detection": 0.157,
+      "false_alarm": 0.0,
+      "precision": 1.0,
+      "f1": 0.2715,
+      "auc": 0.7389
+    },
+    "level (log RMS, log peak)": {
+      "detection": 0.3156,
+      "false_alarm": 0.0,
+      "precision": 1.0,
+      "f1": 0.4797,
+      "auc": 0.8337
+    },
+    "level + shape": {
+      "detection": 0.2688,
+      "false_alarm": 0.0,
+      "precision": 1.0,
+      "f1": 0.4237,
+      "auc": 0.891
+    },
+    "relative band energy": {
+      "detection": 0.5617,
+      "false_alarm": 0.0074,
+      "precision": 0.9987,
+      "f1": 0.719,
+      "auc": 0.9434
+    },
+    "log band energy (proposed)": {
+      "detection": 0.9774,
+      "false_alarm": 0.0074,
+      "precision": 0.9993,
+      "f1": 0.9882,
+      "auc": 0.9991
+    }
+  },
+  "E2_detectors": {
+    "Isolation Forest": {
+      "detection": 0.9774,
+      "false_alarm": 0.0074,
+      "precision": 0.9993,
+      "f1": 0.9882,
+      "auc": 0.9991,
+      "score_us_per_window": 30.4
+    },
+    "One-Class SVM": {
+      "detection": 1.0,
+      "false_alarm": 0.5147,
+      "precision": 0.9514,
+      "f1": 0.9751,
+      "auc": 0.9996,
+      "score_us_per_window": 2.2
+    },
+    "Local Outlier Factor": {
+      "detection": 0.9985,
+      "false_alarm": 0.0294,
+      "precision": 0.9971,
+      "f1": 0.9978,
+      "auc": 0.9993,
+      "score_us_per_window": 4.9
+    },
+    "Max z-score (baseline)": {
+      "detection": 0.9978,
+      "false_alarm": 0.0294,
+      "precision": 0.9971,
+      "f1": 0.9974,
+      "auc": 0.9991
+    }
+  },
+  "E3_seeds": {
+    "detection": {
+      "mean": 0.9522,
+      "std": 0.0284
+    },
+    "false_alarm": {
+      "mean": 0.0103,
+      "std": 0.0036
+    },
+    "precision": {
+      "mean": 0.9989,
+      "std": 0.0004
+    },
+    "f1": {
+      "mean": 0.9748,
+      "std": 0.0152
+    },
+    "auc": {
+      "mean": 0.9979,
+      "std": 0.0013
+    }
+  },
+  "E4_leave_one_load_out": {
+    "0 hp": {
+      "detection": 0.9971,
+      "false_alarm": 0.0625,
+      "precision": 0.9971,
+      "f1": 0.9971,
+      "auc": 0.9995
+    },
+    "1 hp": {
+      "detection": 0.9708,
+      "false_alarm": 0.0,
+      "precision": 1.0,
+      "f1": 0.9852,
+      "auc": 1.0
+    },
+    "2 hp": {
+      "detection": 0.9591,
+      "false_alarm": 0.0,
+      "precision": 1.0,
+      "f1": 0.9791,
+      "auc": 0.9999
+    },
+    "3 hp": {
+      "detection": 0.9883,
+      "false_alarm": 0.05,
+      "precision": 0.9941,
+      "f1": 0.9912,
+      "auc": 0.9969
+    }
+  },
+  "E5_bandwidth": {
+    "12 kHz, shape features": {
+      "detection": 0.7531,
+      "false_alarm": 0.0368,
+      "precision": 0.9952,
+      "f1": 0.8574,
+      "auc": 0.8893
+    },
+    "12 kHz, log band energy": {
+      "detection": 1.0,
+      "false_alarm": 0.0147,
+      "precision": 0.9985,
+      "f1": 0.9993,
+      "auc": 1.0
+    },
+    "500 Hz + 184 Hz LPF, shape features": {
+      "detection": 0.157,
+      "false_alarm": 0.0,
+      "precision": 1.0,
+      "f1": 0.2715,
+      "auc": 0.7389
+    },
+    "500 Hz + 184 Hz LPF, log band energy": {
+      "detection": 0.9774,
+      "false_alarm": 0.0074,
+      "precision": 0.9993,
+      "f1": 0.9882,
+      "auc": 0.9991
+    }
+  },
+  "E6_timing": {
+    "feature_ms_per_window": 0.011,
+    "score_ms_per_window": 3.623,
+    "calibration_fit_ms_120_windows": 34.1,
+    "payload_bytes_per_reading": 1386
+  }
+}
