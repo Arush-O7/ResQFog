@@ -49,8 +49,9 @@ const double SITE_LAT = 12.96920;
 const double SITE_LON = 79.15590;
 
 // Over LoRa a reading is sent every LORA_REPORT_EVERY seconds, and at once
-// when the state changes, to keep the radio channel free for other pumps
-const int LORA_REPORT_EVERY = 5;
+// when the state changes. With one report per 30 s, about 20 pumps can share
+// one gateway at SF7 with under 10 % packet collisions (pure ALOHA estimate).
+const int LORA_REPORT_EVERY = 30;
 const uint16_t LORA_REPLY_WAIT_MS = 300;
 
 // ---------------- Pins ----------------

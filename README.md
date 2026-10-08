@@ -68,7 +68,7 @@ Both are switched off by default (`USE_GPS` and `USE_LORA` at the top of the ske
 | Module | Wiring | What changes |
 |---|---|---|
 | NEO-6M GPS (`USE_GPS 1`, library TinyGPSPlus) | GPS TX → GPIO 16, GPS RX → GPIO 17, 9600 baud | Each reading carries latitude/longitude, a GPS-fix flag and satellites. Without a fix the node sends `SITE_LAT`/`SITE_LON`. The dashboard shows the location and the SMS gets a Google Maps link. |
-| SX1278 LoRa (`USE_LORA 1`, library LoRa) | SCK 18, MISO 19, MOSI 23, NSS 5, RST 14, DIO0 2 | For sites without Wi-Fi. The node computes the 10 band energies itself (`band_features.h`) and sends a 36-byte packet (`lora_packet.h`) every 5 s and at once on a state change. Protection still runs every second. |
+| SX1278 LoRa (`USE_LORA 1`, library LoRa) | SCK 18, MISO 19, MOSI 23, NSS 5, RST 14, DIO0 2 | For sites without Wi-Fi. The node computes the 10 band energies itself (`band_features.h`) and sends a 36-byte packet (`lora_packet.h`) every 30 s and at once on a state change, so about 20 pumps can share one gateway at SF7. Protection still runs every second. |
 
 With LoRa, a second ESP32 + SX1278 runs `edge/resqfog_lora_gateway` next to the fog server. It forwards each packet to `/data` (features in `"f"`, plus RSSI and SNR) and sends restart commands back to the node right after its next packet. `python3 ml/check_band_features.py` checks the on-device feature code against the Python version (same anomaly decision on all 120 test windows).
 
