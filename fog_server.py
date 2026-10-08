@@ -175,6 +175,15 @@ class Machine:
         self.last_sms = 0.0
         self.recovered = 0
 
+        # location (GPS fix or installed coordinates) and radio link, if the node sends them
+        self.lat = None
+        self.lon = None
+        self.gps_fix = False
+        self.satellites = 0
+        self.link = "Wi-Fi"
+        self.rssi = None
+        self.snr = None
+
         # ML: simulated pumps replay CWRU data, so they use the CWRU model.
         # A real pump gets its own model once it has been calibrated.
         self.ml_model = base_model if simulated else load_pump_model(machine_id)
@@ -218,6 +227,24 @@ class Machine:
         if data.get("site"):
             self.site = str(data["site"])[:40]
 
+        try:
+            lat, lon = float(data["lat"]), float(data["lon"])
+            if lat or lon:
+                fix = bool(int(data.get("gps", 0)))
+                if fix and not self.gps_fix:
+                    self.add_event("info", "GPS fix acquired", f"{lat:.5f}, {lon:.5f}")
+                self.lat, self.lon, self.gps_fix = lat, lon, fix
+                self.satellites = int(data.get("sats", 0) or 0)
+        except (KeyError, TypeError, ValueError):
+            pass
+
+        if data.get("via") == "lora":
+            if self.link != "LoRa":
+                self.add_event("info", "Receiving over LoRa", "Readings arrive through the LoRa gateway")
+            self.link = "LoRa"
+            self.rssi = data.get("rssi")
+            self.snr = data.get("snr")
+
     # ML anomaly detection on the vibration window sent with each reading
 
     def start_calibration(self):
@@ -226,7 +253,7 @@ class Machine:
         self.ml_state = "CALIBRATING"
         self.add_event("info", "ML calibration started", f"Collecting {CALIBRATION_WINDOWS} windows of normal running")
 
-    def score_window(self, window):
+    def score_window(self, features):
         if self.motor == "TRIPPED" or self.speed_pct < ML_MIN_SPEED:
             if self.ml_state in ("NORMAL", "ANOMALY"):
                 self.ml_state = "MOTOR STOPPED"
@@ -235,7 +262,6 @@ class Machine:
         if self.ml_state == "MOTOR STOPPED":
             self.ml_state = "NORMAL"
 
-        features = window_features(window)
 
         if self.ml_calibration is not None:
             self.ml_calibration.append(features)
@@ -309,7 +335,7 @@ class Machine:
             "s": status,
         })
 
-    def ingest(self, vibration, pwm, status, motor=None, window=None):
+    def ingest(self, vibration, pwm, status, motor=None, features=None):
         """Handle one live reading from the edge node."""
         now = time.time()
 
@@ -368,8 +394,8 @@ class Machine:
             "status": status,
         }, is_new_fault)
 
-        if window is not None and len(window) == WINDOW:
-            self.score_window(window)
+        if features is not None:
+            self.score_window(features)
 
     def ingest_backlog(self, readings):
         """Readings the edge buffered while the fog server was unreachable."""
@@ -515,6 +541,7 @@ class Machine:
             "alerts": self.alerts,
             "lastSeenAgo": round(now - self.last_seen, 1) if self.last_seen else None,
             "ml": self.ml_state,
+            "link": self.link,
         }
 
     def detail(self, now):
@@ -525,6 +552,13 @@ class Machine:
         return {
             "machine": self.summary(now) | {
                 "trips": self.trips,
+                "lat": self.lat,
+                "lon": self.lon,
+                "gpsFix": self.gps_fix,
+                "satellites": self.satellites,
+                "mapsLink": maps_link(self.lat, self.lon) if self.lat is not None else None,
+                "rssi": self.rssi,
+                "snr": self.snr,
                 "recovered": self.recovered,
                 "smsCooldown": cooldown,
             },
@@ -575,6 +609,26 @@ def load_pump_model(machine_id):
         return joblib.load(path) if os.path.exists(path) else None
     except (OSError, ValueError):
         return None
+
+
+def maps_link(lat, lon):
+    return f"https://maps.google.com/?q={lat:.5f},{lon:.5f}"
+
+
+def parse_features(data):
+    """Band-energy features for one reading.
+
+    A Wi-Fi node sends its raw window ("w", milli-g) and the fog computes the
+    features; a LoRa node computes them itself and the gateway sends them as "f".
+    """
+    f = data.get("f")
+    if isinstance(f, list) and len(f) == 10:
+        try:
+            return [float(v) for v in f]
+        except (TypeError, ValueError):
+            return None
+    window = parse_window(data)
+    return window_features(window) if window is not None else None
 
 
 def parse_window(data):
@@ -649,7 +703,10 @@ def load_captures_from(folder):
 def sms_text(m):
     if SMS_MODE == "template":
         return "sms_internal_alerts"
-    return f"ResQFog ALERT: {m.id} ({m.site}) CRITICAL {m.vibration:.2f} g at {now_str()}. Inspect the pump."
+    text = f"ResQFog ALERT: {m.id} ({m.site}) CRITICAL {m.vibration:.2f} g at {now_str()}. Inspect the pump."
+    if m.lat is not None:
+        text += f" Location: {maps_link(m.lat, m.lon)}"
+    return text
 
 
 def send_sms(m, body=None):
@@ -836,7 +893,7 @@ def receive_data():
     with lock:
         m = get_machine(data.get("id"))
         m.update_site(data)
-        m.ingest(vibration, pwm, data.get("status", ""), data.get("motor"), parse_window(data))
+        m.ingest(vibration, pwm, data.get("status", ""), data.get("motor"), parse_features(data))
         command = take_command(m)
 
     return jsonify({"status": "RECEIVED", "fog": "ONLINE", "command": command})
@@ -968,7 +1025,7 @@ class SimulatedPump:
             source = REPLAY_FAULT if fault_developing else REPLAY_NORMAL
             window = source[random.randrange(len(source))]
 
-        m.ingest(vibration, pwm, status, motor, window)
+        m.ingest(vibration, pwm, status, motor, window_features(window) if window is not None else None)
 
         if status == "CRITICAL" and self.previous != "CRITICAL":
             m.alerts += 1

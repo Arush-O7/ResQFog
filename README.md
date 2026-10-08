@@ -61,6 +61,17 @@ Every pump is different, so a real pump is **calibrated** with the "Calibrate ML
 
 About ₹1,050 per node with hobby modules.
 
+## Optional modules: GPS and LoRa
+
+Both are switched off by default (`USE_GPS` and `USE_LORA` at the top of the sketch), so the basic node works as described above. The code compiles for all four combinations; the modules still have to be tested with the hardware.
+
+| Module | Wiring | What changes |
+|---|---|---|
+| NEO-6M GPS (`USE_GPS 1`, library TinyGPSPlus) | GPS TX → GPIO 16, GPS RX → GPIO 17, 9600 baud | Each reading carries latitude/longitude, a GPS-fix flag and satellites. Without a fix the node sends `SITE_LAT`/`SITE_LON`. The dashboard shows the location and the SMS gets a Google Maps link. |
+| SX1278 LoRa (`USE_LORA 1`, library LoRa) | SCK 18, MISO 19, MOSI 23, NSS 5, RST 14, DIO0 2 | For sites without Wi-Fi. The node computes the 10 band energies itself (`band_features.h`) and sends a 36-byte packet (`lora_packet.h`) every 5 s and at once on a state change. Protection still runs every second. |
+
+With LoRa, a second ESP32 + SX1278 runs `edge/resqfog_lora_gateway` next to the fog server. It forwards each packet to `/data` (features in `"f"`, plus RSSI and SNR) and sends restart commands back to the node right after its next packet. `python3 ml/check_band_features.py` checks the on-device feature code against the Python version (same anomaly decision on all 120 test windows).
+
 ## Setup
 
 ### Edge node
@@ -102,7 +113,7 @@ The thresholds are in two places and must match: the top of `fog_server.py` and 
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /data` | One reading: id, site, vibration, motorSpeed, status, motor, and `w` (256 values in milli-g). The reply may contain `"command": "RESET_TRIP"` |
+| `POST /data` | One reading: id, site, vibration, motorSpeed, status, motor, and either `w` (256 values in milli-g) or `f` (10 band energies, from a LoRa node). Optional lat, lon, gps, sats, via, rssi, snr. The reply may contain `"command": "RESET_TRIP"` |
 | `POST /data/batch` | Readings buffered during an outage, each with its age in ms |
 | `POST /alert` | Critical alert, triggers the SMS |
 | `GET /api/status?machine=PUMP-01` | All pumps plus details of one pump, including its ML state |
@@ -119,9 +130,12 @@ templates/dashboard.html    dashboard
 static/                     Chart.js, served locally
 ml/features.py              band-energy features (used for training and live)
 ml/train.py                 downloads CWRU data, trains and evaluates the model
+ml/experiments.py           ablation, detector comparison, seeds, cross-load, bandwidth
+ml/check_band_features.py   checks the ESP32 feature code against Python
 ml/model.joblib             trained model
 ml/results.json             evaluation results
-edge/resqfog_edge/          ESP32 firmware
+edge/resqfog_edge/          ESP32 firmware (optional GPS and LoRa modules)
+edge/resqfog_lora_gateway/  ESP32 + SX1278 gateway for LoRa nodes
 docs/                       presentation, screenshots, related work, sample data
 ```
 

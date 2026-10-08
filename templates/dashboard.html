@@ -683,6 +683,8 @@ a.btn { text-decoration: none; }
 
             <div class="metric"><span class="k">Edge node</span><span class="v" id="hEdge">WAITING</span></div>
             <div class="metric"><span class="k">Motor</span><span class="v" id="hMotor">--</span></div>
+            <div class="metric"><span class="k">Location</span><span class="v num" id="hLoc">--</span></div>
+            <div class="metric"><span class="k">Link</span><span class="v num" id="hLink">--</span></div>
             <div class="metric"><span class="k">Last telemetry</span><span class="v num" id="hLast">--</span></div>
             <div class="metric"><span class="k">Data rate</span><span class="v num" id="hRate">0.0 msg/s</span></div>
             <div class="metric"><span class="k">Recovered after outage</span><span class="v num" id="hRecovered">0 readings</span></div>
@@ -1030,7 +1032,7 @@ function renderFleet(fleet) {
         }
         const sub = document.createElement("div");
         sub.className = "machine-sub";
-        sub.textContent = m.site + " · ML " + m.ml.toLowerCase();
+        sub.textContent = m.site + " · ML " + m.ml.toLowerCase() + (m.link === "LoRa" ? " · LoRa" : "");
         body.append(title, sub);
 
         const val = document.createElement("div");
@@ -1090,6 +1092,23 @@ function render(d) {
     $("pEdgeSub").textContent = `${m.id} · ESP32 + MPU6050` + (m.simulated ? " (simulated)" : "");
 
     renderMl(d.ml, m, hasData && online);
+
+    const hLoc = $("hLoc");
+    hLoc.innerHTML = "";
+    if (m.lat !== null) {
+        const a = document.createElement("a");
+        a.href = m.mapsLink;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.style.color = "inherit";
+        a.textContent = `${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}`;
+        hLoc.append(a, m.gpsFix ? ` · GPS (${m.satellites} sats)` : " · installed");
+    } else {
+        hLoc.textContent = "--";
+    }
+    $("hLink").textContent = m.link === "LoRa"
+        ? `LoRa · RSSI ${m.rssi} dBm · SNR ${m.snr} dB`
+        : (hasData ? "Wi-Fi" : "--");
     $("hMotor").textContent = !hasData ? "--" : m.motor + (m.trips ? ` · ${m.trips} trip${m.trips > 1 ? "s" : ""}` : "");
     $("hMotor").className = "v" + (m.motor === "TRIPPED" ? " tone-CRITICAL" : hasData ? " tone-NORMAL" : "");
     $("hRecovered").textContent = `${m.recovered} readings`;

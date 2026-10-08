@@ -7,12 +7,26 @@
 // Readings taken while the fog server is unreachable are kept in RAM and
 // uploaded once it is back.
 //
-// Library: LiquidCrystal_I2C (Library Manager)
+// Libraries: LiquidCrystal_I2C; TinyGPSPlus if USE_GPS; LoRa if USE_LORA
+
+// ---------------- Optional modules (1 = on) ----------------
+
+#define USE_GPS  0   // NEO-6M GPS on UART2, see gps_module.h
+#define USE_LORA 0   // SX1278 LoRa to a gateway instead of Wi-Fi, see lora_link.h
 
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+
+#if USE_GPS
+#include "gps_module.h"
+#endif
+
+#if USE_LORA
+#include "band_features.h"
+#include "lora_link.h"
+#endif
 
 // ---------------- Wi-Fi and fog server ----------------
 
@@ -27,7 +41,17 @@ const char* fogServer = FOG_SERVER;
 // ---------------- Machine identity ----------------
 
 #define MACHINE_ID "PUMP-01"
+#define MACHINE_NUMBER 1          // used as the node number over LoRa
 #define SITE_NAME  "VIT Main Sump"
+
+// Installed location, used when there is no GPS or no GPS fix
+const double SITE_LAT = 12.96920;
+const double SITE_LON = 79.15590;
+
+// Over LoRa a reading is sent every LORA_REPORT_EVERY seconds, and at once
+// when the state changes, to keep the radio channel free for other pumps
+const int LORA_REPORT_EVERY = 5;
+const uint16_t LORA_REPLY_WAIT_MS = 300;
 
 // ---------------- Pins ----------------
 
@@ -105,6 +129,13 @@ bool fogOnline = false;
 
 unsigned long lastSampleTime = 0;
 unsigned long lastWifiAttempt = 0;
+
+#if USE_LORA
+int readingsSinceReport = 0;
+String lastReportedStatus = "";
+bool lastReportedTrip = false;
+bool loraReady = false;
+#endif
 
 // ---------------- MPU6050 ----------------
 
@@ -260,6 +291,20 @@ void handleFogReply(const String& reply) {
 
 // ---------------- Fog communication ----------------
 
+#if USE_GPS
+// Adds ,"lat":..,"lon":..,"gps":0/1,"sats":n to the JSON being built
+void appendLocation(String& json) {
+  json += ",\"lat\":";
+  json += String(gpsLat(SITE_LAT), 6);
+  json += ",\"lon\":";
+  json += String(gpsLon(SITE_LON), 6);
+  json += ",\"gps\":";
+  json += gpsHasFix() ? "1" : "0";
+  json += ",\"sats\":";
+  json += String(gpsSatellites());
+}
+#endif
+
 String buildPayload(const String& status, bool withWindow) {
   String json;
   json.reserve(withWindow ? 2000 : 200);
@@ -275,6 +320,10 @@ String buildPayload(const String& status, bool withWindow) {
   json += "\",\"motor\":\"";
   json += motorTripped ? "TRIPPED" : "RUNNING";
   json += "\"";
+
+#if USE_GPS
+  appendLocation(json);
+#endif
 
   if (withWindow) {
     // window in milli-g, as integers to keep the message short
@@ -423,6 +472,55 @@ void sendCriticalAlert() {
   Serial.println("================================");
 }
 
+// ---------------- LoRa uplink ----------------
+
+#if USE_LORA
+// Sends the reading as a 36-byte packet with band energies computed here
+void sendLoraReading(bool newCritical) {
+  UplinkPacket packet;
+  packet.node = MACHINE_NUMBER;
+  packet.levelMilliG = (uint16_t)min(65535L, lroundf(vibration * 1000.0f));
+  packet.pwm = motorSpeed;
+  packet.flags = statusCode(currentStatus);
+  if (motorTripped) packet.flags |= FLAG_TRIPPED;
+  if (newCritical) packet.flags |= FLAG_ALERT;
+
+  float bands[BAND_COUNT];
+  computeBandEnergies(windowData, WINDOW, 1000000.0f / WINDOW_STEP_US, bands);
+  for (int b = 0; b < BAND_COUNT; b++) packet.bands[b] = (int16_t)lroundf(bands[b] * 1000.0f);
+
+#if USE_GPS
+  if (gpsHasFix()) packet.flags |= FLAG_GPS_FIX;
+  packet.latE6 = (int32_t)lround(gpsLat(SITE_LAT) * 1e6);
+  packet.lonE6 = (int32_t)lround(gpsLon(SITE_LON) * 1e6);
+#else
+  packet.latE6 = (int32_t)lround(SITE_LAT * 1e6);
+  packet.lonE6 = (int32_t)lround(SITE_LON * 1e6);
+#endif
+
+  uint8_t command = loraExchange(packet, LORA_REPLY_WAIT_MS);
+  fogOnline = true;   // on LoRa this means "last packet sent"
+  if (command == CMD_RESET_TRIP && motorTripped) clearTrip("restart command over LoRa");
+
+  Serial.print("LoRa packet sent, seq ");
+  Serial.println(packet.seq);
+}
+
+void reportOverLora() {
+  bool stateChanged = currentStatus != lastReportedStatus || motorTripped != lastReportedTrip;
+  bool newCritical = currentStatus == "CRITICAL" && !criticalSent;
+
+  readingsSinceReport++;
+  if (!loraReady || (!stateChanged && readingsSinceReport < LORA_REPORT_EVERY)) return;
+
+  sendLoraReading(newCritical);
+  if (newCritical) criticalSent = true;
+  readingsSinceReport = 0;
+  lastReportedStatus = currentStatus;
+  lastReportedTrip = motorTripped;
+}
+#endif
+
 // ---------------- LCD ----------------
 
 void updateLCD() {
@@ -433,11 +531,15 @@ void updateLCD() {
 
   const char* state = motorTripped ? "TRIPPED" : currentStatus.c_str();
 
+#if USE_LORA
+  snprintf(line2, sizeof(line2), "%-8s LoRa", state);
+#else
   if (backlogCount > 0) {
     snprintf(line2, sizeof(line2), "%-8s B:%-4d", state, backlogCount);
   } else {
     snprintf(line2, sizeof(line2), "%-8s F:%s", state, fogOnline ? "OK" : "--");
   }
+#endif
 
   lcd.setCursor(0, 0);
   lcd.print(line1);
@@ -490,19 +592,36 @@ void setup() {
   digitalWrite(IN2_PIN, LOW);
   analogWrite(ENA_PIN, 0);
 
+#if USE_GPS
+  gpsBegin();
+  Serial.println("GPS started on UART2 (using installed location until a fix).");
+#endif
+
   delay(1000);
 
+#if USE_LORA
+  loraReady = loraBegin();
+  Serial.println(loraReady ? "LoRa radio ready." : "LoRa radio NOT found - check wiring.");
+  lcd.clear();
+  lcd.print(loraReady ? "LoRa ready" : "LoRa error");
+  delay(1000);
+#else
   connectWiFi();
-
   Serial.print("Fog server: ");
   Serial.println(fogServer);
+#endif
   Serial.println("================================");
 
   lcd.clear();
 }
 
 void loop() {
+#if USE_GPS
+  gpsPoll();
+#endif
+#if !USE_LORA
   maintainWiFi();
+#endif
 
   motorSpeed = map(analogRead(POT_PIN), 0, 4095, 0, 255);
   potPercent = map(motorSpeed, 0, 255, 0, 100);
@@ -539,6 +658,10 @@ void loop() {
     noTone(BUZZER_PIN);
   }
 
+#if USE_LORA
+  reportOverLora();
+  if (currentStatus != "CRITICAL") criticalSent = false;
+#else
   if (sendTelemetry()) {
     if (backlogCount > 0) flushBacklog();
   } else {
@@ -550,6 +673,7 @@ void loop() {
   } else {
     criticalSent = false;
   }
+#endif
 
   updateLCD();
 }

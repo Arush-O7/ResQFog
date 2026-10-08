@@ -17,7 +17,7 @@ fault_logs/
 /*.pptx
 
 # edge Wi-Fi credentials
-edge/resqfog_edge/secrets.h
+edge/*/secrets.h
 
 # ML: downloaded dataset and per-pump calibrated models
 ml/data/
