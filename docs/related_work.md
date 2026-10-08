@@ -13,14 +13,14 @@ Notes we collected while comparing ResQFog with existing research, products and 
 | Kolar et al., *Tehnički Glasnik*, 2022 [5] | IIoT accelerometer, edge and fog devices | ISO 10816-1 severity rules | Industrial rotating equipment | Node-RED dashboard, MQTT | Not reported |
 | Charan, SAE, 2022 [6] | ARM Cortex-M4 | Autoencoder, 7.5 kB | Vehicle vibration data; about 80 % | Not reported | Not reported |
 | Román Espinoza and Pesantes Morales, thesis, 2025 [7] | ESP32 + MPU6050 | Cloud, FFT | Two motors | Cloud storage | Not reported |
-| **ResQFog** | ESP32 + MPU6050 (about ₹1,050 per node) | Thresholds on the ESP32; Isolation Forest on the fog server | CWRU filtered and resampled to the MPU6050 bandwidth: 97.7 % fault-window detection, 0.7 % false alarms, AUC 0.999 | Fleet dashboard, Telegram alerts with location, fault CSV recordings, offline buffer | Edge trip after 3 critical readings, remote restart |
+| **ResQFog** | ESP32 + MPU6050 (about ₹1,050 per node) | Thresholds on the ESP32; Isolation Forest on the fog server | CWRU filtered and resampled to the MPU6050 bandwidth: 97.7 % fault-window detection, 0.7 % false alarms, AUC 0.999 | Fleet dashboard, SMS alerts with location, fault CSV recordings, offline buffer | Edge trip after 3 critical readings, remote restart |
 
 What we think is different in ResQFog:
 
 1. **Two detection layers.** A threshold alarm and motor trip on the ESP32 that need no network, and an ML anomaly model on the fog server that warns before the threshold is crossed.
 2. **Training matched to the sensor.** Public data is low-pass filtered at 184 Hz (the MPU6050 DLPF setting we use) and resampled to 500 Hz before training, so the model only uses information our sensor can measure. With this preprocessing, shape features (crest factor, kurtosis) dropped to about 15 % detection, while band-energy features reached 97.7 %. This is a useful result for anyone using MPU6050-class sensors.
 3. **Per-pump calibration.** The same model type is fitted to each pump from about 2 minutes of normal running, with a 3-of-5 vote over windows.
-4. **Operational features for unmanned sites.** Store-and-forward at the edge, fault recordings, Telegram alerts with the pump location, and remote restart.
+4. **Operational features for unmanned sites.** Store-and-forward at the edge, fault recordings, SMS alerts with the pump location sent from an ordinary SIM, and remote restart.
 
 ## Dataset
 

@@ -3,18 +3,18 @@
 Receives telemetry from the ESP32 edge nodes installed on each pump, keeps
 per-machine state for the dashboard, runs the ML anomaly model on the
 vibration window that comes with each reading, records the readings around
-every fault as CSV, and sends alerts to the maintenance team on Telegram.
+every fault as CSV, and sends SMS alerts to the maintenance team.
 
 Run:
     python3 fog_server.py                  # real edge nodes, real alerts
     python3 fog_server.py --fleet          # real PUMP-01 + three simulated pumps
     python3 fog_server.py --demo           # four simulated pumps, no hardware, no alerts
-    python3 fog_server.py --find-chat-id   # show Telegram chat IDs (setup)
+    python3 fog_server.py --test-sms       # send one test SMS and exit
 """
 
 import argparse
+import base64
 import csv
-import html
 import json
 import math
 import os
@@ -40,11 +40,19 @@ from features import WINDOW, window_features, window_rms  # noqa: E402
 
 load_dotenv()
 
-# Alerts go to a Telegram bot (free, any text, can send a map pin).
-# TELEGRAM_CHAT_ID may list several chats or groups, separated by commas.
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_IDS = [c.strip() for c in os.getenv("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
-TELEGRAM_API = os.getenv("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+# Alerts are sent as normal SMS from a SIM card, so they can carry any text
+# (pump, reading, GPS location...) and need no app on the receiving phone.
+#   android: an Android phone running the free "SMS Gateway for Android" app
+#            (local server mode) on the same Wi-Fi as the fog server
+#   gsm:     a SIM800L / A7670 GSM module on a USB serial port of the fog computer
+SMS_BACKEND = os.getenv("SMS_BACKEND", "android").strip().lower()
+# numbers to alert; falls back to MANAGER_PHONE from the earlier Twilio setup
+SMS_TO = [n.strip() for n in (os.getenv("SMS_TO") or os.getenv("MANAGER_PHONE") or "").split(",") if n.strip()]
+SMS_GATEWAY_URL = os.getenv("SMS_GATEWAY_URL", "").strip().rstrip("/")
+SMS_GATEWAY_USER = os.getenv("SMS_GATEWAY_USER", "").strip()
+SMS_GATEWAY_PASSWORD = os.getenv("SMS_GATEWAY_PASSWORD", "").strip()
+GSM_PORT = os.getenv("GSM_PORT", "").strip()
+GSM_BAUD = int(os.getenv("GSM_BAUD", "9600") or 9600)
 
 # Must match WARNING_THRESHOLD / CRITICAL_THRESHOLD in edge/resqfog_edge/resqfog_edge.ino
 WARNING_THRESHOLD = 1.00
@@ -89,7 +97,10 @@ SIM_SITES = [
 
 app = Flask(__name__)
 
-alerts_enabled = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS)
+if SMS_BACKEND == "gsm":
+    alerts_enabled = bool(SMS_TO and GSM_PORT)
+else:
+    alerts_enabled = bool(SMS_TO and SMS_GATEWAY_URL)
 
 lock = threading.Lock()
 
@@ -699,64 +710,142 @@ def load_captures_from(folder):
         })
 
 
-# ---------------------------------------------------------------- alerts (Telegram)
+# ---------------------------------------------------------------- alerts (SMS)
 
 ALERT_TITLES = {
     "critical": "CRITICAL vibration",
-    "tripped": "Motor TRIPPED by edge protection",
-    "ml": "Early warning: abnormal vibration pattern",
+    "tripped": "MOTOR TRIPPED",
+    "ml": "EARLY WARNING (ML)",
 }
 
 ALERT_ACTIONS = {
-    "critical": "Inspect the pump. The ESP32 trips the motor if this lasts 3 readings.",
-    "tripped": "Inspect the pump, then restart it from the dashboard or with the speed knob.",
-    "ml": "Vibration level is still normal. Plan an inspection soon.",
+    "critical": "Inspect the pump. Motor trips if this lasts 3 readings.",
+    "tripped": "Inspect, then restart from the dashboard or speed knob.",
+    "ml": "Level still normal, pattern abnormal. Plan an inspection.",
 }
 
 
-def telegram(method, payload):
-    """POST one Telegram Bot API call; raises on any failure."""
-    request = urllib.request.Request(
-        f"{TELEGRAM_API}/bot{TELEGRAM_BOT_TOKEN}/{method}",
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            reply = json.loads(response.read())
-    except urllib.error.HTTPError as e:
-        reply = json.loads(e.read() or b"{}")
-    if not reply.get("ok"):
-        raise RuntimeError(reply.get("description", "Telegram request failed"))
-    return reply["result"]
+def sms_safe(text):
+    """Keep to plain GSM characters so every phone shows the message correctly."""
+    return text.encode("ascii", "ignore").decode()
 
 
 def alert_text(m, kind, vibration=None):
-    """The message the maintenance team receives (Telegram HTML formatting)."""
-    e = html.escape
+    """The SMS the maintenance team receives."""
     vibration = m.vibration if vibration is None else vibration
     lines = [
-        f"<b>ResQFog ALERT: {ALERT_TITLES[kind]}</b>",
-        "",
-        f"<b>Pump:</b> {e(m.id)} ({e(m.site)})",
-        f"<b>Vibration:</b> {vibration:.2f} g (warning {WARNING_THRESHOLD:.2f} g, critical {CRITICAL_THRESHOLD:.2f} g)",
-        f"<b>Motor:</b> {'TRIPPED' if m.motor == 'TRIPPED' else f'running at {m.speed_pct} %'}",
+        f"ResQFog ALERT: {ALERT_TITLES[kind]}",
+        f"Pump: {m.id} ({m.site})",
+        f"Vibration: {vibration:.2f} g (critical {CRITICAL_THRESHOLD:.2f} g)",
+        f"Motor: {'TRIPPED' if m.motor == 'TRIPPED' else f'running {m.speed_pct}%'}",
     ]
     if m.ml_score is not None and m.ml_model:
-        lines.append(f"<b>ML check:</b> {m.ml_state.lower()} (score {m.ml_score:.3f}, limit {m.ml_model['threshold']:.3f})")
-    lines.append(f"<b>Time:</b> {datetime.now().strftime('%d %b %Y, %H:%M:%S')}")
+        lines.append(f"ML: {m.ml_state.lower()}, score {m.ml_score:.2f}/{m.ml_model['threshold']:.2f}")
+    lines.append(f"Time: {datetime.now().strftime('%d-%b %H:%M:%S')}")
     if m.lat is not None:
-        source = f"GPS fix, {m.satellites} satellites" if m.gps_fix else "installed location"
-        lines.append(f"<b>Location:</b> {m.lat:.5f}, {m.lon:.5f} ({source})")
-        lines.append(f'<b>Map:</b> <a href="{maps_link(m.lat, m.lon)}">open in Google Maps</a>')
+        lines.append(f"Location: {m.lat:.5f},{m.lon:.5f} ({'GPS' if m.gps_fix else 'installed'})")
+        lines.append(f"Map: {maps_link(m.lat, m.lon)}")
     if m.link == "LoRa" and m.rssi is not None:
-        lines.append(f"<b>Link:</b> LoRa, RSSI {m.rssi} dBm, SNR {m.snr} dB")
-    lines += ["", f"<b>Action:</b> {ALERT_ACTIONS[kind]}"]
-    return "\n".join(lines)
+        lines.append(f"Link: LoRa {m.rssi} dBm")
+    lines.append(ALERT_ACTIONS[kind])
+    return sms_safe("\n".join(lines))
+
+
+def split_sms(text, size=153):
+    """Split into SMS-sized parts at line breaks (for the GSM module)."""
+    parts, current = [], ""
+    for line in text.split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) <= size - 6:
+            current = candidate
+        else:
+            if current:
+                parts.append(current)
+            current = line[: size - 6]
+    if current:
+        parts.append(current)
+    if len(parts) > 1:
+        parts = [f"({i}/{len(parts)}) {p}" for i, p in enumerate(parts, 1)]
+    return parts
+
+
+def send_via_android(numbers, text):
+    """SMS Gateway for Android, local server mode (Basic auth, JSON)."""
+    body = json.dumps({"textMessage": {"text": text}, "phoneNumbers": numbers}).encode()
+    auth = base64.b64encode(f"{SMS_GATEWAY_USER}:{SMS_GATEWAY_PASSWORD}".encode()).decode()
+    last_error = None
+    # the endpoint is /message in older app versions and /messages in newer ones
+    for path in ("/message", "/messages"):
+        request = urllib.request.Request(
+            SMS_GATEWAY_URL + path, data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Basic {auth}"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                if 200 <= response.status < 300:
+                    return
+        except urllib.error.HTTPError as e:
+            last_error = f"gateway replied {e.code}"
+            if e.code == 404:
+                continue
+            raise RuntimeError(last_error)
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"phone gateway not reachable ({e.reason})")
+    raise RuntimeError(last_error or "gateway did not accept the message")
+
+
+class GsmModem:
+    """Sends SMS with AT commands through a SIM800L / A7670 module."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def command(self, text, expect=("OK",), timeout=5.0):
+        self.stream.write(text.encode())
+        return self.wait(expect, timeout)
+
+    def wait(self, expect, timeout):
+        reply, end = "", time.time() + timeout
+        while time.time() < end:
+            chunk = self.stream.read(64)
+            if chunk:
+                reply += chunk.decode(errors="ignore")
+                if "ERROR" in reply:
+                    raise RuntimeError("modem: " + reply.strip().splitlines()[-1])
+                if any(e in reply for e in expect):
+                    return reply
+            else:
+                time.sleep(0.05)
+        raise RuntimeError("modem did not answer (check wiring, power and SIM)")
+
+    def send(self, number, text):
+        self.command("AT\r")
+        self.command("AT+CMGF=1\r")                       # text mode
+        self.command(f'AT+CMGS="{number}"\r', expect=(">",))
+        self.command(text + "\x1a", expect=("+CMGS",), timeout=30.0)
+
+
+gsm_lock = threading.Lock()
+
+
+def send_via_gsm(numbers, text):
+    import serial   # pyserial, only needed for the GSM module
+    with gsm_lock, serial.Serial(GSM_PORT, GSM_BAUD, timeout=0.2) as port:
+        modem = GsmModem(port)
+        for number in numbers:
+            for part in split_sms(text):
+                modem.send(number, part)
+
+
+def deliver_sms(text):
+    if SMS_BACKEND == "gsm":
+        send_via_gsm(SMS_TO, text)
+    else:
+        send_via_android(SMS_TO, text)
 
 
 def send_alert(m, kind, text=None, vibration=None):
-    """Send one alert to every configured chat. Call without the lock held."""
+    """Send one alert SMS to every configured number. Call without the lock held."""
     now = time.time()
 
     if not alerts_enabled:
@@ -766,27 +855,20 @@ def send_alert(m, kind, text=None, vibration=None):
         if m is not None:
             if now - m.last_alerts.get(kind, 0) < ALERT_COOLDOWN:
                 alert_state["status"] = "COOLDOWN"
-                m.add_event("alert", "Alert skipped", f"{ALERT_TITLES[kind]}: cooldown active")
+                m.add_event("alert", "SMS skipped", f"{ALERT_TITLES[kind]}: cooldown active")
                 return False
             m.last_alerts[kind] = now
             text = alert_text(m, kind, vibration)
-            location = (m.lat, m.lon) if m.lat is not None and kind != "ml" else None
-        else:
-            location = None
 
     try:
-        for chat in TELEGRAM_CHAT_IDS:
-            telegram("sendMessage", {"chat_id": chat, "text": text, "parse_mode": "HTML",
-                                     "disable_web_page_preview": True})
-            if location:
-                telegram("sendLocation", {"chat_id": chat, "latitude": location[0], "longitude": location[1]})
+        deliver_sms(text)
     except Exception as e:
         with lock:
             alert_state["status"] = "FAILED"
             if m is not None:
                 m.last_alerts[kind] = 0
-                m.add_event("critical", "Alert failed", str(e)[:120])
-        print("ALERT FAILED:", e)
+                m.add_event("critical", "SMS failed", str(e)[:120])
+        print("SMS FAILED:", e)
         return False
 
     with lock:
@@ -794,9 +876,9 @@ def send_alert(m, kind, text=None, vibration=None):
         alert_state["sent"] += 1
         alert_state["lastSent"] = now_str()
         if m is not None:
-            m.add_event("alert", "Alert sent on Telegram", ALERT_TITLES[kind])
+            m.add_event("alert", "SMS alert sent", f"{ALERT_TITLES[kind]} to {len(SMS_TO)} number(s)")
 
-    print(f"Alert sent ({kind}) to {len(TELEGRAM_CHAT_IDS)} chat(s)")
+    print(f"SMS sent ({kind}) to {len(SMS_TO)} number(s) via {SMS_BACKEND}")
     return True
 
 
@@ -822,23 +904,6 @@ def handle_alert(m, vibration, pwm, status, motor=None, allow_alert=True):
             return False
 
     return send_alert(m, "critical", vibration=vibration)
-
-
-def find_chat_ids():
-    """Print the chats that have messaged the bot, to fill in TELEGRAM_CHAT_ID."""
-    if not TELEGRAM_BOT_TOKEN:
-        print("Set TELEGRAM_BOT_TOKEN in .env first (create the bot with @BotFather).")
-        return
-    updates = telegram("getUpdates", {})
-    chats = {}
-    for u in updates:
-        chat = (u.get("message") or u.get("channel_post") or u.get("my_chat_member") or {}).get("chat")
-        if chat:
-            chats[chat["id"]] = chat.get("title") or " ".join(filter(None, [chat.get("first_name"), chat.get("last_name")]))
-    if not chats:
-        print("No chats yet. Send any message to the bot (or add it to a group and post there), then run this again.")
-    for chat_id, name in chats.items():
-        print(f"{chat_id}\t{name}")
 
 
 # ---------------------------------------------------------------- routes
@@ -884,8 +949,8 @@ def api_status():
             "thresholds": {"warning": WARNING_THRESHOLD, "critical": CRITICAL_THRESHOLD},
             "alerts": {
                 "enabled": alerts_enabled,
-                "channel": "Telegram",
-                "chats": len(TELEGRAM_CHAT_IDS),
+                "channel": "SMS (Android phone)" if SMS_BACKEND != "gsm" else "SMS (GSM module)",
+                "recipients": len(SMS_TO),
                 "status": alert_state["status"],
                 "sent": alert_state["sent"],
                 "lastSent": alert_state["lastSent"],
@@ -1021,13 +1086,15 @@ def alert():
     })
 
 
-@app.route("/test-alert", methods=["GET", "POST"])
-def test_alert():
+def test_sms_text():
+    return f"ResQFog test SMS: alerts from the fog server reach this number. {datetime.now().strftime('%d-%b %H:%M:%S')}"
+
+
+@app.route("/test-sms", methods=["GET", "POST"])
+def test_sms():
     if not alerts_enabled:
-        return jsonify({"status": "NOT_SENT", "reason": "Telegram not configured in .env"}), 500
-    text = (f"<b>ResQFog test message</b>\nAlerts from the fog server reach this chat.\n"
-            f"<b>Time:</b> {datetime.now().strftime('%d %b %Y, %H:%M:%S')}")
-    if send_alert(None, "test", text):
+        return jsonify({"status": "NOT_SENT", "reason": "SMS not configured in .env"}), 500
+    if send_alert(None, "test", test_sms_text()):
         return jsonify({"status": "SENT"})
     return jsonify({"status": "NOT_SENT", "reason": alert_state["status"]}), 500
 
@@ -1145,13 +1212,15 @@ if __name__ == "__main__":
     parser.add_argument("--fleet", action="store_true",
                         help="real ESP32 as PUMP-01 plus three simulated pumps")
     parser.add_argument("--port", type=int, default=5001)
-    parser.add_argument("--find-chat-id", action="store_true",
-                        help="list the Telegram chats that have messaged the bot, then exit")
+    parser.add_argument("--test-sms", action="store_true",
+                        help="send one test SMS with the settings in .env, then exit")
     args = parser.parse_args()
 
-    if args.find_chat_id:
-        find_chat_ids()
-        sys.exit(0)
+    if args.test_sms:
+        if not alerts_enabled:
+            print("SMS not configured: set SMS_TO and SMS_GATEWAY_URL (or SMS_BACKEND=gsm and GSM_PORT) in .env")
+            sys.exit(1)
+        sys.exit(0 if send_alert(None, "test", test_sms_text()) else 1)
 
     demo_mode = args.demo
 
@@ -1176,9 +1245,9 @@ if __name__ == "__main__":
     else:
         print("MODE: LIVE")
     if alerts_enabled:
-        print(f"Alerts:     Telegram, {len(TELEGRAM_CHAT_IDS)} chat(s)")
+        print(f"Alerts:     SMS via {'GSM module' if SMS_BACKEND == 'gsm' else 'Android phone'} to {len(SMS_TO)} number(s)")
     else:
-        print("WARNING: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in .env - alerts disabled")
+        print("WARNING: SMS not configured in .env - alerts disabled")
     print(f"Thresholds: warning {WARNING_THRESHOLD:.2f} g, critical {CRITICAL_THRESHOLD:.2f} g")
     print("ML model:  ", "loaded (CWRU)" if base_model else "missing - run python3 ml/train.py")
     print()

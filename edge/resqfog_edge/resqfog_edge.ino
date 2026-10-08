@@ -449,7 +449,7 @@ void sendCriticalAlert() {
   HTTPClient http;
   http.begin(String(fogServer) + "/alert");
   http.setConnectTimeout(HTTP_TIMEOUT_MS);
-  http.setTimeout(8000);   // fog waits for Telegram before replying
+  http.setTimeout(8000);   // fog waits for the SMS to be handed over before replying
   http.addHeader("Content-Type", "application/json");
 
   String json = buildPayload("CRITICAL", false);
