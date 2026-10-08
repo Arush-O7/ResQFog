@@ -88,7 +88,7 @@ const unsigned long WINDOW_STEP_US = 2000;
 float windowData[WINDOW];
 const uint16_t HTTP_TIMEOUT_MS = 1500;
 
-// The fog server already limits SMS to one per minute per machine
+// The fog server already limits alerts to one per minute per machine
 const unsigned long ALERT_COOLDOWN = 0;
 
 // ---------------- Offline buffer ----------------
@@ -449,7 +449,7 @@ void sendCriticalAlert() {
   HTTPClient http;
   http.begin(String(fogServer) + "/alert");
   http.setConnectTimeout(HTTP_TIMEOUT_MS);
-  http.setTimeout(8000);   // fog waits for Twilio before replying
+  http.setTimeout(8000);   // fog waits for Telegram before replying
   http.addHeader("Content-Type", "application/json");
 
   String json = buildPayload("CRITICAL", false);

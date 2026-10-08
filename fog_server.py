@@ -3,16 +3,19 @@
 Receives telemetry from the ESP32 edge nodes installed on each pump, keeps
 per-machine state for the dashboard, runs the ML anomaly model on the
 vibration window that comes with each reading, records the readings around
-every fault as CSV, and sends SMS alerts through Twilio.
+every fault as CSV, and sends alerts to the maintenance team on Telegram.
 
 Run:
-    python3 fog_server.py            # real edge nodes, real SMS
-    python3 fog_server.py --fleet    # real PUMP-01 + three simulated pumps
-    python3 fog_server.py --demo     # four simulated pumps, no hardware, no SMS
+    python3 fog_server.py                  # real edge nodes, real alerts
+    python3 fog_server.py --fleet          # real PUMP-01 + three simulated pumps
+    python3 fog_server.py --demo           # four simulated pumps, no hardware, no alerts
+    python3 fog_server.py --find-chat-id   # show Telegram chat IDs (setup)
 """
 
 import argparse
 import csv
+import html
+import json
 import math
 import os
 import random
@@ -20,6 +23,8 @@ import re
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from datetime import datetime
 
@@ -35,14 +40,11 @@ from features import WINDOW, window_features, window_rms  # noqa: E402
 
 load_dotenv()
 
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE = os.getenv("TWILIO_PHONE")
-MANAGER_PHONE = os.getenv("MANAGER_PHONE")
-
-# "detailed" sends pump ID, site and reading.
-# "template" sends the fixed text we used during the first SMS tests.
-SMS_MODE = os.getenv("SMS_MODE", "detailed").lower()
+# Alerts go to a Telegram bot (free, any text, can send a map pin).
+# TELEGRAM_CHAT_ID may list several chats or groups, separated by commas.
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_IDS = [c.strip() for c in os.getenv("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
+TELEGRAM_API = os.getenv("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
 
 # Must match WARNING_THRESHOLD / CRITICAL_THRESHOLD in edge/resqfog_edge/resqfog_edge.ino
 WARNING_THRESHOLD = 1.00
@@ -51,7 +53,7 @@ CRITICAL_THRESHOLD = 1.20
 # Edge trips the motor after this many consecutive CRITICAL readings (same as TRIP_AFTER on the ESP32)
 TRIP_AFTER = 3
 
-SMS_COOLDOWN = 60          # seconds between SMS for the same machine
+ALERT_COOLDOWN = 60        # seconds between alerts of the same kind for the same pump
 EDGE_TIMEOUT = 5           # seconds without telemetry before a node is shown offline
 
 HISTORY_SIZE = 120
@@ -87,13 +89,7 @@ SIM_SITES = [
 
 app = Flask(__name__)
 
-sms_enabled = all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE, MANAGER_PHONE])
-
-if sms_enabled:
-    from twilio.rest import Client
-    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-else:
-    client = None
+alerts_enabled = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS)
 
 lock = threading.Lock()
 
@@ -101,8 +97,8 @@ server_start_time = time.time()
 
 demo_mode = False
 
-sms_state = {
-    "status": "READY" if sms_enabled else "DISABLED",
+alert_state = {
+    "status": "READY" if alerts_enabled else "DISABLED",
     "sent": 0,
     "lastSent": "--",
 }
@@ -172,7 +168,7 @@ class Machine:
         self.captures = deque(maxlen=FAULT_LIST_SIZE)
 
         self.pending_command = None
-        self.last_sms = 0.0
+        self.last_alerts = {}      # alert kind -> time it was last sent
         self.recovered = 0
 
         # location (GPS fix or installed coordinates) and radio link, if the node sends them
@@ -283,6 +279,7 @@ class Machine:
                 if self.status == "NORMAL":
                     detail += ", before the threshold alarm"
                 self.add_event("warning", "ML anomaly detected", detail)
+                alert_later(self, "ml")
             elif self.ml_state == "ANOMALY":
                 self.add_event("normal", "ML pattern back to normal")
         self.ml_state = new_state
@@ -368,6 +365,7 @@ class Machine:
                     "Motor tripped by edge protection",
                     f"{TRIP_AFTER} consecutive critical readings, power cut at the pump",
                 )
+                alert_later(self, "tripped")
             else:
                 self.add_event("normal", "Motor restarted", "Trip cleared")
             self.motor = motor
@@ -547,7 +545,8 @@ class Machine:
     def detail(self, now):
         recent = [t for t in self.arrivals if now - t <= 10]
         total_state_time = sum(self.time_in_state.values())
-        cooldown = max(0, int(SMS_COOLDOWN - (now - self.last_sms))) if self.last_sms else 0
+        last = self.last_alerts.get("critical", 0)
+        cooldown = max(0, int(ALERT_COOLDOWN - (now - last))) if last else 0
 
         return {
             "machine": self.summary(now) | {
@@ -560,7 +559,7 @@ class Machine:
                 "rssi": self.rssi,
                 "snr": self.snr,
                 "recovered": self.recovered,
-                "smsCooldown": cooldown,
+                "alertCooldown": cooldown,
             },
             "current": {
                 "vibration": self.vibration,
@@ -700,55 +699,115 @@ def load_captures_from(folder):
         })
 
 
-def sms_text(m):
-    if SMS_MODE == "template":
-        return "sms_internal_alerts"
-    text = f"ResQFog ALERT: {m.id} ({m.site}) CRITICAL {m.vibration:.2f} g at {now_str()}. Inspect the pump."
+# ---------------------------------------------------------------- alerts (Telegram)
+
+ALERT_TITLES = {
+    "critical": "CRITICAL vibration",
+    "tripped": "Motor TRIPPED by edge protection",
+    "ml": "Early warning: abnormal vibration pattern",
+}
+
+ALERT_ACTIONS = {
+    "critical": "Inspect the pump. The ESP32 trips the motor if this lasts 3 readings.",
+    "tripped": "Inspect the pump, then restart it from the dashboard or with the speed knob.",
+    "ml": "Vibration level is still normal. Plan an inspection soon.",
+}
+
+
+def telegram(method, payload):
+    """POST one Telegram Bot API call; raises on any failure."""
+    request = urllib.request.Request(
+        f"{TELEGRAM_API}/bot{TELEGRAM_BOT_TOKEN}/{method}",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            reply = json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        reply = json.loads(e.read() or b"{}")
+    if not reply.get("ok"):
+        raise RuntimeError(reply.get("description", "Telegram request failed"))
+    return reply["result"]
+
+
+def alert_text(m, kind, vibration=None):
+    """The message the maintenance team receives (Telegram HTML formatting)."""
+    e = html.escape
+    vibration = m.vibration if vibration is None else vibration
+    lines = [
+        f"<b>ResQFog ALERT: {ALERT_TITLES[kind]}</b>",
+        "",
+        f"<b>Pump:</b> {e(m.id)} ({e(m.site)})",
+        f"<b>Vibration:</b> {vibration:.2f} g (warning {WARNING_THRESHOLD:.2f} g, critical {CRITICAL_THRESHOLD:.2f} g)",
+        f"<b>Motor:</b> {'TRIPPED' if m.motor == 'TRIPPED' else f'running at {m.speed_pct} %'}",
+    ]
+    if m.ml_score is not None and m.ml_model:
+        lines.append(f"<b>ML check:</b> {m.ml_state.lower()} (score {m.ml_score:.3f}, limit {m.ml_model['threshold']:.3f})")
+    lines.append(f"<b>Time:</b> {datetime.now().strftime('%d %b %Y, %H:%M:%S')}")
     if m.lat is not None:
-        text += f" Location: {maps_link(m.lat, m.lon)}"
-    return text
+        source = f"GPS fix, {m.satellites} satellites" if m.gps_fix else "installed location"
+        lines.append(f"<b>Location:</b> {m.lat:.5f}, {m.lon:.5f} ({source})")
+        lines.append(f'<b>Map:</b> <a href="{maps_link(m.lat, m.lon)}">open in Google Maps</a>')
+    if m.link == "LoRa" and m.rssi is not None:
+        lines.append(f"<b>Link:</b> LoRa, RSSI {m.rssi} dBm, SNR {m.snr} dB")
+    lines += ["", f"<b>Action:</b> {ALERT_ACTIONS[kind]}"]
+    return "\n".join(lines)
 
 
-def send_sms(m, body=None):
-    """Called without the lock held (the Twilio request can take a few seconds)."""
+def send_alert(m, kind, text=None, vibration=None):
+    """Send one alert to every configured chat. Call without the lock held."""
     now = time.time()
 
-    if not sms_enabled:
-        print("SMS disabled: Twilio credentials missing in .env")
+    if not alerts_enabled:
         return False
 
     with lock:
-        if m is not None and now - m.last_sms < SMS_COOLDOWN:
-            sms_state["status"] = "COOLDOWN"
-            m.add_event("sms", "SMS skipped", f"Cooldown active for {m.id}")
-            return False
         if m is not None:
-            m.last_sms = now
-        body = body or sms_text(m)
+            if now - m.last_alerts.get(kind, 0) < ALERT_COOLDOWN:
+                alert_state["status"] = "COOLDOWN"
+                m.add_event("alert", "Alert skipped", f"{ALERT_TITLES[kind]}: cooldown active")
+                return False
+            m.last_alerts[kind] = now
+            text = alert_text(m, kind, vibration)
+            location = (m.lat, m.lon) if m.lat is not None and kind != "ml" else None
+        else:
+            location = None
 
     try:
-        message = client.messages.create(body=body, from_=TWILIO_PHONE, to=MANAGER_PHONE)
+        for chat in TELEGRAM_CHAT_IDS:
+            telegram("sendMessage", {"chat_id": chat, "text": text, "parse_mode": "HTML",
+                                     "disable_web_page_preview": True})
+            if location:
+                telegram("sendLocation", {"chat_id": chat, "latitude": location[0], "longitude": location[1]})
     except Exception as e:
         with lock:
-            sms_state["status"] = "FAILED"
+            alert_state["status"] = "FAILED"
             if m is not None:
-                m.last_sms = 0
-                m.add_event("critical", "SMS failed", str(e)[:120])
-        print("SMS FAILED:", e)
+                m.last_alerts[kind] = 0
+                m.add_event("critical", "Alert failed", str(e)[:120])
+        print("ALERT FAILED:", e)
         return False
 
     with lock:
-        sms_state["status"] = "SENT"
-        sms_state["sent"] += 1
-        sms_state["lastSent"] = now_str()
+        alert_state["status"] = "SENT"
+        alert_state["sent"] += 1
+        alert_state["lastSent"] = now_str()
         if m is not None:
-            m.add_event("sms", "SMS alert sent", f"Manager notified about {m.id}")
+            m.add_event("alert", "Alert sent on Telegram", ALERT_TITLES[kind])
 
-    print("SMS sent:", message.sid, "|", body)
+    print(f"Alert sent ({kind}) to {len(TELEGRAM_CHAT_IDS)} chat(s)")
     return True
 
 
-def handle_alert(m, vibration, pwm, status, motor=None, allow_sms=True):
+def alert_later(m, kind):
+    """Send an alert from a background thread (used while the lock is held)."""
+    if m.simulated or not alerts_enabled:
+        return
+    threading.Thread(target=send_alert, args=(m, kind), daemon=True).start()
+
+
+def handle_alert(m, vibration, pwm, status, motor=None, allow_alert=True):
     with lock:
         if time.time() - m.last_seen > 0.5:
             m.ingest(vibration, pwm, status, motor)
@@ -758,11 +817,28 @@ def handle_alert(m, vibration, pwm, status, motor=None, allow_sms=True):
         if status != "CRITICAL":
             return False
 
-        if not allow_sms:
-            m.add_event("sms", "SMS skipped", "Simulated machine, no SMS sent")
+        if not allow_alert:
+            m.add_event("alert", "Alert skipped", "Simulated machine, no message sent")
             return False
 
-    return send_sms(m)
+    return send_alert(m, "critical", vibration=vibration)
+
+
+def find_chat_ids():
+    """Print the chats that have messaged the bot, to fill in TELEGRAM_CHAT_ID."""
+    if not TELEGRAM_BOT_TOKEN:
+        print("Set TELEGRAM_BOT_TOKEN in .env first (create the bot with @BotFather).")
+        return
+    updates = telegram("getUpdates", {})
+    chats = {}
+    for u in updates:
+        chat = (u.get("message") or u.get("channel_post") or u.get("my_chat_member") or {}).get("chat")
+        if chat:
+            chats[chat["id"]] = chat.get("title") or " ".join(filter(None, [chat.get("first_name"), chat.get("last_name")]))
+    if not chats:
+        print("No chats yet. Send any message to the bot (or add it to a group and post there), then run this again.")
+    for chat_id, name in chats.items():
+        print(f"{chat_id}\t{name}")
 
 
 # ---------------------------------------------------------------- routes
@@ -796,23 +872,24 @@ def api_status():
 
         detail = selected.detail(now)
 
-        sms_status = sms_state["status"]
-        if sms_status == "COOLDOWN" and all(now - m.last_sms >= SMS_COOLDOWN for m in machines.values()):
-            detail = selected.detail(now)
-
-        sms_status = sms_state["status"] = "READY"
+        if alert_state["status"] == "COOLDOWN" and all(
+            now - t >= ALERT_COOLDOWN for m in machines.values() for t in m.last_alerts.values()
+        ):
+            alert_state["status"] = "READY"
 
         return jsonify({
             "mode": "DEMO" if demo_mode else "LIVE",
             "serverTime": now_str(now),
             "uptime": format_duration(now - server_start_time),
             "thresholds": {"warning": WARNING_THRESHOLD, "critical": CRITICAL_THRESHOLD},
-            "sms": {
-                "enabled": sms_enabled,
-                "status": sms_status,
-                "sent": sms_state["sent"],
-                "lastSent": sms_state["lastSent"],
-                "cooldownRemaining": detail["machine"]["smsCooldown"],
+            "alerts": {
+                "enabled": alerts_enabled,
+                "channel": "Telegram",
+                "chats": len(TELEGRAM_CHAT_IDS),
+                "status": alert_state["status"],
+                "sent": alert_state["sent"],
+                "lastSent": alert_state["lastSent"],
+                "cooldownRemaining": detail["machine"]["alertCooldown"],
             },
             "fleet": [m.summary(now) for m in fleet],
             **detail,
@@ -935,21 +1012,24 @@ def alert():
         m.update_site(data)
 
     status = str(data.get("status", "")).upper()
-    sms_sent = handle_alert(m, vibration, pwm, status, data.get("motor"))
+    sent = handle_alert(m, vibration, pwm, status, data.get("motor"))
 
     return jsonify({
         "status": "CRITICAL",
         "fog": "RECEIVED",
-        "sms": "SENT" if sms_sent else "NOT_SENT",
+        "alert": "SENT" if sent else "NOT_SENT",
     })
 
 
-@app.route("/test-sms", methods=["GET", "POST"])
-def test_sms():
-    body = None if SMS_MODE == "template" else "ResQFog test message: SMS alerts are working."
-    if send_sms(None, body or "sms_internal_alerts"):
-        return jsonify({"status": "SMS_SENT"})
-    return jsonify({"status": "SMS_FAILED", "reason": sms_state["status"]}), 500
+@app.route("/test-alert", methods=["GET", "POST"])
+def test_alert():
+    if not alerts_enabled:
+        return jsonify({"status": "NOT_SENT", "reason": "Telegram not configured in .env"}), 500
+    text = (f"<b>ResQFog test message</b>\nAlerts from the fog server reach this chat.\n"
+            f"<b>Time:</b> {datetime.now().strftime('%d %b %Y, %H:%M:%S')}")
+    if send_alert(None, "test", text):
+        return jsonify({"status": "SENT"})
+    return jsonify({"status": "NOT_SENT", "reason": alert_state["status"]}), 500
 
 
 # ---------------------------------------------------------------- simulator
@@ -1030,7 +1110,7 @@ class SimulatedPump:
         if status == "CRITICAL" and self.previous != "CRITICAL":
             m.alerts += 1
             m.add_event("critical", "Critical alert received", f"{m.id} escalated to fog")
-            m.add_event("sms", "SMS skipped", "Simulated machine, no SMS sent")
+            m.add_event("alert", "Alert skipped", "Simulated machine, no message sent")
 
         self.previous = status
 
@@ -1061,11 +1141,17 @@ def create_simulated_pumps(skip_first):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ResQFog fog server")
     parser.add_argument("--demo", action="store_true",
-                        help="simulate four pumps (no hardware, no SMS)")
+                        help="simulate four pumps (no hardware, no alerts)")
     parser.add_argument("--fleet", action="store_true",
                         help="real ESP32 as PUMP-01 plus three simulated pumps")
     parser.add_argument("--port", type=int, default=5001)
+    parser.add_argument("--find-chat-id", action="store_true",
+                        help="list the Telegram chats that have messaged the bot, then exit")
     args = parser.parse_args()
+
+    if args.find_chat_id:
+        find_chat_ids()
+        sys.exit(0)
 
     demo_mode = args.demo
 
@@ -1084,13 +1170,15 @@ if __name__ == "__main__":
     print("        RESQFOG FOG SERVER")
     print("================================")
     if args.demo:
-        print("MODE: DEMO (4 simulated pumps, SMS disabled)")
+        print("MODE: DEMO (4 simulated pumps, alerts disabled)")
     elif args.fleet:
         print("MODE: FLEET (real PUMP-01 + 3 simulated pumps)")
     else:
         print("MODE: LIVE")
-    if not sms_enabled:
-        print("WARNING: Twilio credentials missing - SMS disabled")
+    if alerts_enabled:
+        print(f"Alerts:     Telegram, {len(TELEGRAM_CHAT_IDS)} chat(s)")
+    else:
+        print("WARNING: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in .env - alerts disabled")
     print(f"Thresholds: warning {WARNING_THRESHOLD:.2f} g, critical {CRITICAL_THRESHOLD:.2f} g")
     print("ML model:  ", "loaded (CWRU)" if base_model else "missing - run python3 ml/train.py")
     print()

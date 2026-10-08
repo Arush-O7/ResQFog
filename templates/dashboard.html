@@ -359,7 +359,7 @@ svg.i {
 .event-dot.normal { background: var(--normal); }
 .event-dot.warning { background: var(--warning); }
 .event-dot.critical { background: var(--critical); }
-.event-dot.sms { background: var(--accent-2); }
+.event-dot.sms, .event-dot.alert { background: var(--accent-2); }
 .event-dot.info { background: var(--accent); }
 
 .event-main { flex: 1; min-width: 0; }
@@ -603,7 +603,7 @@ a.btn { text-decoration: none; }
                     <div class="node-icon"><svg class="i"><use href="#i-phone"/></svg></div>
                     <div class="node-body">
                         <div class="node-title">Cloud Alerting</div>
-                        <div class="node-sub">Twilio SMS → maintenance manager</div>
+                        <div class="node-sub">Telegram bot → maintenance team</div>
                     </div>
                     <div class="node-state" id="pSms"><span class="dot"></span>--</div>
                 </div>
@@ -657,7 +657,7 @@ a.btn { text-decoration: none; }
                 <span class="kpi-icon"><svg class="i"><use href="#i-bell"/></svg></span>
             </div>
             <div><span class="kpi-value num" id="kAlerts">0</span></div>
-            <div class="kpi-sub num" id="kSms">0 SMS sent</div>
+            <div class="kpi-sub num" id="kSms">0 alerts sent</div>
         </div>
 
     </section>
@@ -689,8 +689,8 @@ a.btn { text-decoration: none; }
             <div class="metric"><span class="k">Data rate</span><span class="v num" id="hRate">0.0 msg/s</span></div>
             <div class="metric"><span class="k">Recovered after outage</span><span class="v num" id="hRecovered">0 readings</span></div>
             <div class="metric"><span class="k">Fog uptime</span><span class="v num" id="hUptime">0s</span></div>
-            <div class="metric"><span class="k">SMS service</span><span class="v" id="hSms">--</span></div>
-            <div class="metric"><span class="k">Last SMS</span><span class="v num" id="hSmsLast">--</span></div>
+            <div class="metric"><span class="k">Telegram alerts</span><span class="v" id="hSms">--</span></div>
+            <div class="metric"><span class="k">Last alert</span><span class="v num" id="hSmsLast">--</span></div>
         </div>
 
     </section>
@@ -730,7 +730,7 @@ a.btn { text-decoration: none; }
 
             <div class="actions" style="margin-top:16px">
                 <button class="btn" id="btnReset"><svg class="i"><use href="#i-refresh"/></svg>Reset session</button>
-                <button class="btn" id="btnSms"><svg class="i"><use href="#i-send"/></svg>Send test SMS</button>
+                <button class="btn" id="btnSms"><svg class="i"><use href="#i-send"/></svg>Send test alert</button>
                 <button class="btn" id="btnCalibrate"><svg class="i"><use href="#i-activity"/></svg>Calibrate ML</button>
             </div>
         </div>
@@ -1145,8 +1145,8 @@ function render(d) {
 
     setState($("pEdge"), !hasData ? "WAITING" : online ? "ONLINE" : "OFFLINE", online ? "on" : hasData ? "off" : "");
     setState($("pFog"), "ONLINE", "on");
-    const smsTone = !d.sms.enabled || d.sms.status === "FAILED" ? "off" : "on";
-    setState($("pSms"), d.sms.enabled ? d.sms.status : "DISABLED", smsTone);
+    const smsTone = !d.alerts.enabled || d.alerts.status === "FAILED" ? "off" : "on";
+    setState($("pSms"), d.alerts.enabled ? d.alerts.status : "DISABLED", smsTone);
     $("link1").classList.toggle("active", online);
     $("link2").classList.toggle("active", online && (c.status === "CRITICAL" || state === "TRIPPED"));
 
@@ -1167,7 +1167,7 @@ function render(d) {
 
     $("kAlerts").textContent = d.stats.alerts;
     $("kAlerts").className = "kpi-value num" + (d.stats.alerts ? " tone-CRITICAL" : "");
-    $("kSms").textContent = `${d.sms.sent} SMS sent`;
+    $("kSms").textContent = `${d.alerts.sent} alert${d.alerts.sent === 1 ? "" : "s"} sent`;
 
     chart.data.labels = d.history.map(p => p.t);
     chart.data.datasets[0].data = d.history.map(p => p.v);
@@ -1181,11 +1181,11 @@ function render(d) {
     $("hUptime").textContent = d.uptime;
 
     const hSms = $("hSms");
-    let smsText = d.sms.enabled ? d.sms.status : "DISABLED";
-    if (d.sms.cooldownRemaining > 0) smsText += ` · cooldown ${d.sms.cooldownRemaining}s`;
+    let smsText = d.alerts.enabled ? `${d.alerts.status} · ${d.alerts.chats} chat${d.alerts.chats === 1 ? "" : "s"}` : "DISABLED";
+    if (d.alerts.cooldownRemaining > 0) smsText += ` · cooldown ${d.alerts.cooldownRemaining}s`;
     hSms.textContent = smsText;
     hSms.className = "v" + (smsTone === "off" ? " tone-CRITICAL" : " tone-NORMAL");
-    $("hSmsLast").textContent = d.sms.lastSent;
+    $("hSmsLast").textContent = d.alerts.lastSent;
 
     const st = d.statusTime;
     $("dN").style.width = st.NORMAL + "%";
@@ -1312,15 +1312,15 @@ $("btnReset").addEventListener("click", async () => {
 });
 
 $("btnSms").addEventListener("click", async () => {
-    if (!confirm("Send a real test SMS to the manager's phone via Twilio?")) return;
+    if (!confirm("Send a test message to the Telegram chat?")) return;
     const btn = $("btnSms");
     btn.disabled = true;
     try {
-        const res = await fetch("/test-sms", { method: "POST" });
+        const res = await fetch("/test-alert", { method: "POST" });
         const data = await res.json();
-        toast(data.status === "SMS_SENT" ? "Test SMS sent" : "SMS not sent: " + (data.reason || "error"));
+        toast(data.status === "SENT" ? "Test alert sent on Telegram" : "Alert not sent: " + (data.reason || "error"));
     } catch (e) {
-        toast("SMS request failed");
+        toast("Alert request failed");
     }
     btn.disabled = false;
     refresh();
