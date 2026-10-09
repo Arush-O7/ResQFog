@@ -28,3 +28,6 @@ paper/
 
 # other projects kept here for reference (contain their own keys)
 Accident-Detection-and-Emergency-Alert-System/
+
+# fog database (pump registry, health history, alerts, maintenance log)
+resqfog.db

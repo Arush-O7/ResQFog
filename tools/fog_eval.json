@@ -1,0 +1,40 @@
+{
+  "measured": "2026-10-09 22:44",
+  "data_volume": {
+    "edge_body_bytes": 1383,
+    "raw_per_pump_day_MB": 119.5,
+    "fog_db_per_pump_day_kB": 114.7,
+    "cloud_summary_bytes": 114,
+    "cloud_summary_per_pump_day_kB": 164.2,
+    "reduction_percent": 99.86
+  },
+  "calibration_upload_s": 0.13,
+  "fog_round_trip": {
+    "requests": 300,
+    "median_ms": 2.41,
+    "p95_ms": 3.02
+  },
+  "capacity": {
+    "clients": 20,
+    "seconds": 15,
+    "readings_per_s": 366.9,
+    "pumps_at_1_per_s": 366
+  },
+  "wifi_hop_to_router": {
+    "pings": 20,
+    "median_ms": 3.48,
+    "p95_ms": 3.93
+  },
+  "cloud_round_trip": {
+    "host": "dynamodb.ap-south-1.amazonaws.com",
+    "requests": 30,
+    "new_connection": {
+      "median_ms": 163.9,
+      "p95_ms": 189.9
+    },
+    "kept_open": {
+      "median_ms": 55.2,
+      "p95_ms": 79.7
+    }
+  }
+}

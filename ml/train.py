@@ -7,7 +7,7 @@ Bearing Data Center into ml/data/, converts each one to what our edge node
 would see (MPU6050 184 Hz low-pass, 500 Hz sampling, 256-sample windows),
 trains an Isolation Forest on normal windows only, and writes:
 
-    ml/model.joblib    model + decision threshold, loaded by fog_server.py
+    ml/model.joblib    model, decision threshold and health baseline, loaded by fog_server.py
     ml/results.json    evaluation numbers used in the report
     ml/replay.npz      a few real windows, replayed by the --demo simulator
 
@@ -29,6 +29,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from features import DLPF_HZ, FEATURES, FS, WINDOW, window_features  # noqa: E402
+from health import HealthModel  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(HERE, "data")
@@ -174,7 +175,9 @@ def main():
         },
     }
 
-    joblib.dump({"model": model, "threshold": threshold, "features": FEATURES, "source": "CWRU"},
+    # health score baseline for the simulated pumps (calibrated pumps get their own)
+    joblib.dump({"model": model, "threshold": threshold, "features": FEATURES, "source": "CWRU",
+                 "health": HealthModel(xt)},
                 os.path.join(HERE, "model.joblib"))
 
     with open(os.path.join(HERE, "results.json"), "w") as f:

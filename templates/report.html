@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ResQFog report {{ pump.id }}</title>
+<script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<style>
+:root { --text: #14213d; --text-2: #4b5567; --muted: #7b8494; --line: #d9dee6; --good: #1f7a4d; --watch: #a06a00; --poor: #b42318; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: var(--text); background: #fff; font-size: 13px; line-height: 1.45; }
+.page { max-width: 960px; margin: 0 auto; padding: 32px 24px 48px; }
+header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 2px solid var(--text); padding-bottom: 14px; margin-bottom: 20px; }
+h1 { font-size: 22px; }
+h2 { font-size: 15px; margin: 26px 0 10px; }
+.sub { color: var(--text-2); margin-top: 4px; }
+.meta { text-align: right; color: var(--text-2); font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.kpi { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.kpi .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+.kpi .v { font-size: 20px; font-weight: 700; margin-top: 4px; }
+.GOOD { color: var(--good); } .WATCH { color: var(--watch); } .POOR { color: var(--poor); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.chart { height: 240px; }
+.empty { color: var(--muted); padding: 8px 0; }
+.info td:first-child { color: var(--text-2); width: 32%; }
+.print { margin-bottom: 8px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: #fff; cursor: pointer; font: inherit; font-size: 12px; }
+a { color: inherit; }
+@media (max-width: 640px) { .grid { grid-template-columns: 1fr 1fr; } header { flex-direction: column; } .meta { text-align: left; } }
+@media print { .print { display: none; } .page { padding: 0; } h2 { break-after: avoid; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+    <div>
+        <h1>Pump maintenance report · {{ pump.id }}</h1>
+        <div class="sub">{{ pump.site }}{% if pump.simulated %} · simulated pump (demo){% endif %}</div>
+    </div>
+    <div class="meta"><button class="print" onclick="window.print()">Print / save as PDF</button><br>ResQFog fog node<br>Generated {{ generated }}</div>
+</header>
+
+<div class="grid">
+    <div class="kpi"><div class="k">Health</div><div class="v {{ pump.health.level }}">{% if pump.health.score is not none %}{{ pump.health.score|round|int }} %{% else %}--{% endif %}</div></div>
+    <div class="kpi"><div class="k">Level</div><div class="v {{ pump.health.level }}">{{ pump.health.level }}</div></div>
+    <div class="kpi"><div class="k">Running hours</div><div class="v">{{ '%.1f'|format(pump.hours.run) }}</div></div>
+    <div class="kpi"><div class="k">Service due in</div><div class="v">{% if pump.hours.dueIn < 0 %}overdue{% else %}{{ pump.hours.dueIn|round|int }} h{% endif %}</div></div>
+</div>
+
+<h2>Pump details</h2>
+<table class="info">
+    <tr><td>Current state</td><td>{{ pump.state }}</td></tr>
+    <tr><td>Location</td><td>{% if maps %}<a href="{{ maps }}">{{ '%.5f'|format(pump.lat) }}, {{ '%.5f'|format(pump.lon) }}</a>{% else %}not set{% endif %}</td></tr>
+    <tr><td>Motor rating</td><td>{% if pump.motorKw %}{{ pump.motorKw }} kW{% else %}--{% endif %}</td></tr>
+    <tr><td>Installed</td><td>{{ pump.installed or '--' }}</td></tr>
+    <tr><td>Health trend</td><td>{% set d = pump.health.perDay %}{% if d is none %}--{% elif d|abs >= 48 %}{{ '%+.1f'|format(d / 24) }} % per hour{% else %}{{ '%+.1f'|format(d) }} % per day{% endif %}{% if pump.health.etaPoor %} · about {{ (pump.health.etaPoor / 3600)|round(1) }} h to "poor" at the current rate{% endif %}</td></tr>
+    <tr><td>Alarm limits</td><td>warning {{ '%.2f'|format(warning) }} g, critical {{ '%.2f'|format(critical) }} g; health watch {{ pump.health.watch }} %, poor {{ pump.health.poor }} %</td></tr>
+    <tr><td>ML baseline</td><td>{{ pump.ml.model or 'not calibrated' }}</td></tr>
+    {% if pump.notes %}<tr><td>Notes</td><td>{{ pump.notes }}</td></tr>{% endif %}
+</table>
+
+<h2>Health and vibration, last 7 days</h2>
+{% if points %}
+<div class="chart"><canvas id="chart"></canvas></div>
+{% else %}
+<p class="empty">No stored points yet.</p>
+{% endif %}
+
+<h2>Alerts</h2>
+{% if alerts %}
+<table>
+    <tr><th>#</th><th>Alert</th><th>Opened</th><th>Repeats</th><th>SMS</th><th>Escalated</th><th>Acknowledged</th></tr>
+    {% for a in alerts %}
+    <tr><td>{{ a.id }}</td><td>{{ a.title }}<br><span style="color:var(--text-2)">{{ a.detail }}</span></td><td>{{ a.time }}</td><td>{{ a.count }}</td><td>{{ a.sms }}</td><td>{{ a.escalated or '--' }}</td><td>{% if a.ackBy %}{{ a.ackBy }}, {{ a.ackTime }}{% if a.ackNote %} ({{ a.ackNote }}){% endif %}{% else %}open{% endif %}</td></tr>
+    {% endfor %}
+</table>
+{% else %}
+<p class="empty">No alerts.</p>
+{% endif %}
+
+<h2>Maintenance log</h2>
+{% if maintenance %}
+<table>
+    <tr><th>Date</th><th>Work done</th><th>Technician</th><th>At running hours</th><th>Notes</th></tr>
+    {% for r in maintenance %}
+    <tr><td>{{ r.time }}</td><td>{{ r.action }}{% if r.service %} (service){% endif %}</td><td>{{ r.technician }}</td><td>{{ r.runHours }}</td><td>{{ r.notes }}</td></tr>
+    {% endfor %}
+</table>
+{% else %}
+<p class="empty">Nothing logged.</p>
+{% endif %}
+
+<h2>Fault recordings</h2>
+{% if pump.faults %}
+<table>
+    <tr><th>Fault time</th><th>Reading</th><th>Peak</th><th>File</th></tr>
+    {% for f in pump.faults %}
+    <tr><td>{{ f.time }}</td><td>{{ '%.2f'|format(f.faultValue) }} g</td><td>{{ '%.2f'|format(f.peak) }} g</td><td><a href="/faults/{{ f.file }}">{{ f.file }}</a></td></tr>
+    {% endfor %}
+</table>
+{% else %}
+<p class="empty">No fault recordings.</p>
+{% endif %}
+
+</div>
+
+{% if points %}
+<script>
+const points = {{ points|tojson }};
+new Chart(document.getElementById("chart"), {
+    type: "line",
+    data: {
+        labels: points.map(p => p.t),
+        datasets: [
+            { label: "Health %", data: points.map(p => p.h), borderColor: "#1f7a4d", borderWidth: 2, pointRadius: 0, yAxisID: "y", spanGaps: true },
+            { label: "Average vibration (g)", data: points.map(p => p.v), borderColor: "#1d4e89", borderWidth: 1.2, pointRadius: 0, yAxisID: "y2", spanGaps: true }
+        ]
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        scales: {
+            x: { ticks: { maxTicksLimit: 8, maxRotation: 0 } },
+            y: { min: 0, max: 100, title: { display: true, text: "health %" } },
+            y2: { position: "right", beginAtZero: true, title: { display: true, text: "g" }, grid: { display: false } }
+        }
+    }
+});
+</script>
+{% endif %}
+</body>
+</html>

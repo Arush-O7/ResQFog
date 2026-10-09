@@ -1,14 +1,14 @@
 # ResQFog
 
-Edge–fog–cloud condition monitoring for water-supply pumping stations, with an ML anomaly model trained on real bearing data.
+Edge–fog condition monitoring and maintenance for water-supply pumping stations, with ML early warning and a pump health score tested on real bearing data.
 
-ResQFog is our project for BCSE313L (Fundamentals of Fog and Edge Computing) at VIT. An ESP32 with an MPU6050 accelerometer is mounted on each pump motor. Every second it records a short vibration window, raises a local alarm and trips the motor if the vibration stays critical, and sends the reading to a Flask "fog" server. The fog server runs an Isolation Forest on the vibration window to warn about abnormal patterns before the threshold is crossed, shows all pumps on one dashboard, records the readings around every fault, and sends SMS alerts to the maintenance team.
+ResQFog is our project for BCSE313L (Fundamentals of Fog and Edge Computing) at VIT. An ESP32 with an MPU6050 accelerometer is mounted on each pump motor. Every second it records a short vibration window, raises a local alarm and trips the motor if the vibration stays critical, and sends the reading to a Flask "fog" server in the pump office. The fog server runs an Isolation Forest and a health score on the vibration window, shows every pump on one dashboard and on a map, keeps the health history and a maintenance log, and sends SMS alerts that have to be acknowledged or they are escalated.
 
 ![Dashboard](docs/images/dashboard.png)
 
 ## Why pumping stations
 
-Borewell pumps, sump pumps and the pumps that fill overhead tanks are usually spread out and nobody is stationed at them. Most mechanical faults (bearing wear, impeller imbalance, misalignment) show up first as a change in vibration, but at an unmanned site they are only noticed when the water stops. The network at these sites is also unreliable, so the protection runs on the ESP32 itself, and the fog and cloud add early warning and visibility on top.
+Borewell pumps, sump pumps and the pumps that fill overhead tanks are usually spread out and nobody is stationed at them. Most mechanical faults (bearing wear, impeller imbalance, misalignment) show up first as a change in vibration, but at an unmanned site they are only noticed when the water stops. The network at these sites is also unreliable, so the protection runs on the ESP32 itself, and the fog adds early warning, trends and the maintenance workflow on top.
 
 ## How detection works
 
@@ -38,29 +38,81 @@ The model is trained on the [CWRU bearing dataset](https://engineering.case.edu/
 
 Full numbers are in [ml/results.json](ml/results.json). Shape features such as kurtosis and crest factor only reached about 15 % detection at this bandwidth, which is why the model uses band energies.
 
-![Detection panel and event log](docs/images/detection_and_events.png)
+Every pump is different, so a real pump is **calibrated** from the dashboard: the same kind of model is fitted to that pump's own normal running, either in 2 minutes or over an hour (one window every 30 s, which covers more of its normal variation). Simulated pumps in demo mode replay real CWRU windows and use the CWRU model.
 
-Every pump is different, so a real pump is **calibrated** with the "Calibrate ML" button: it fits the same kind of model to about 2 minutes of that pump's normal running. Simulated pumps in demo mode replay real CWRU windows and use the CWRU model.
+**Pump health score – how far the pump has moved from its own normal running**
+
+The anomaly model answers "is this window abnormal?". The health score answers "how worn is this pump, and is it getting worse?". For each window the fog measures the distance of its band energies from the calibration windows (Mahalanobis distance, divided by the 95th percentile of calibration), and maps it to 0–100 % on a log scale. One point is stored per minute (the median of the last 6), and the level changes when it holds for 3 points: **good** above 75 %, **watch** 50–75 %, **poor** below 50 % (sends an SMS). A straight line through the last 6 hours gives the time until "poor" at the current rate.
+
+We tested this on the [IMS bearing dataset](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/): bearings run on a test rig until they failed, recorded every 10 minutes for 7 to 45 days. Every recording went through the same MPU6050 filtering as above, and each bearing was calibrated on 120 windows from its first day:
+
+| Failed bearing | Health below 75 % (watch) | Below 50 % (poor) | Same score on full 20 kHz signal | RMS above calibration + 3 sd |
+|---|---|---|---|---|
+| Test 1, bearing 3 (inner race) | 185 h before failure | 9.5 h | 611 h | 656 h |
+| Test 1, bearing 4 (roller) | not detected | – | 125 h | 656 h |
+| Test 2, bearing 1 (outer race) | 2.8 h | 1.5 h | 56 h | 74 h |
+| Test 3, bearing 3 (outer race) | 11.3 h | 2.2 h | 51 h | 59 h |
+| **False alarms on the 8 healthy bearings** (more than 48 h before the end) | **0** | **0** | 2 | 4 |
+
+So at the MPU6050's bandwidth the score never raised a false alarm, warned before 3 of the 4 failures, but often only hours before. A wide-band sensor warns days earlier but with more false alarms. The time estimate was off by about 80 % (median) and was too optimistic for the outer-race failures, because wear speeds up near the end, so the dashboard shows it as an upper limit. Numbers in [ml/ims_results.json](ml/ims_results.json).
+
+## Dashboard
+
+| Tab | What it shows |
+|---|---|
+| Overview | Live state of the selected pump, vibration graph, KPIs, system health, event log, fault recordings, motor restart |
+| Health | Health score and level, trend per day, time to "poor", health history, and the latest spectrum against normal running with the abnormal bands in red |
+| Map & pumps | Every pump on an OpenStreetMap map coloured by state, the pump registry (site, location, motor rating, installation date, running hours) and a form to add or edit a pump; click the map to set its location |
+| Maintenance | Open alerts of all pumps with an Acknowledge button, alert history, running hours and next service, the maintenance log, and a printable pump report and history CSV |
+
+![Health tab](docs/images/health.png)
+
+![Map and pump registry](docs/images/map.png)
+
+![Maintenance tab](docs/images/maintenance.png)
+
+## Alerts, acknowledgement and escalation
+
+Alerts are sent for critical vibration, a motor trip, an ML early warning and a pump whose health becomes poor. Each one is logged as an open alert until someone acknowledges it on the dashboard; repeats while it is open only raise its count. If nobody acknowledges it within 10 minutes (`ESCALATE_AFTER`), it is sent again to the supervisor numbers in `SMS_ESCALATE_TO`.
+
+The SMS is sent from an ordinary SIM card, so it carries the full details and needs no app on the receiving phone:
+
+```
+ResQFog ALERT: CRITICAL vibration
+Pump: PUMP-07 (Bagayam Sump)
+Vibration: 1.31 g (critical 1.20 g)
+Motor: running 78%
+ML: normal, score 0.47/0.55
+Health: 81% (good)
+Time: 09-Oct 22:46:12
+Location: 12.93421,79.13310 (installed)
+Map: https://maps.google.com/?q=12.93421,79.13310
+Inspect the pump. Motor trips if this lasts 3 readings.
+```
+
+The location comes from the pump registry, so the node needs no GPS. SMS APIs in India only allow pre-registered templates, so the alert is sent through an Android phone running the free SMSGate app (default), or through a GSM module. A template-based CircuitDigest option is also included.
+
+## What the fog tier saves
+
+Measured with `python3 tools/fog_eval.py` on our laptop (results in [tools/fog_eval.json](tools/fog_eval.json)):
+
+| | |
+|---|---|
+| One reading with its window (JSON body from the node) | 1,383 bytes, 119.5 MB per pump per day |
+| What the fog keeps (one point per minute in SQLite) | about 115 kB per pump per day |
+| A cloud copy of the per-minute summaries would need | 164 kB per pump per day (99.86 % less than raw) |
+| Fog round trip of a reading, including features, ML and health | 2.4 ms median (3.0 ms p95), plus 3.5 ms Wi-Fi hop to the router |
+| HTTPS round trip to the nearest cloud region (AWS Mumbai) | 164 ms with a new connection, 55 ms with a kept-open one |
+| Readings the fog handles per second (20 pumps sending flat out) | about 367, so one laptop can serve a few hundred pumps at 1 Hz |
+
+And when the internet is down, the alarm, the motor trip, the dashboard and the SMS from the local phone all keep working.
 
 ## Other features
 
-- **Fleet dashboard** – card per pump, live graph, statistics, event log, system health; works on a phone.
-- **SMS alerts** – sent from an ordinary SIM card, so the message carries the full details and needs no app on the receiving phone: pump ID, site, reading and threshold, motor state, ML score, time, GPS location and a Google Maps link. Sent for critical vibration, a motor trip and an ML early warning, at most once per minute per pump and alert type, to one or more numbers.
-
-  ```
-  ResQFog ALERT: CRITICAL vibration
-  Pump: PUMP-01 (VIT Main Sump)
-  Vibration: 1.31 g (critical 1.20 g)
-  Motor: running 78%
-  Time: 08-Oct 14:02:11
-  Location: 12.96920,79.15590 (GPS)
-  Map: https://maps.google.com/?q=12.96920,79.15590
-  Inspect the pump. Motor trips if this lasts 3 readings.
-  ```
-
-  SMS APIs in India only allow pre-registered templates, so the alert is sent from an ordinary SIM instead: by default through an Android phone running the free SMSGate app, or through a GSM module. A template-based CircuitDigest option is also included.
 - **Offline buffer** – if the fog server can't be reached, the ESP32 keeps up to 300 readings (5 minutes) and uploads them later.
 - **Fault recordings** – 50 readings before and 50 after every new fault, saved as CSV in `fault_logs/`.
+- **Pump report** – one page per pump with health history, alerts, acknowledgements, maintenance and faults; print it to PDF from the browser.
+- **Running hours** – counted while the motor runs; logging a service resets the hours until the next service (`SERVICE_EVERY_HOURS`, default 2000).
 
 ## Hardware
 
@@ -72,18 +124,7 @@ Every pump is different, so a real pump is **calibrated** with the "Calibrate ML
 | L298N motor driver | ENA GPIO 25, IN1 GPIO 26, IN2 GPIO 27 |
 | Buzzer | GPIO 32 |
 
-About ₹1,050 per node with hobby modules.
-
-## Optional modules: GPS and LoRa
-
-Both are switched off by default (`USE_GPS` and `USE_LORA` at the top of the sketch), so the basic node works as described above. The code compiles for all four combinations; the modules still have to be tested with the hardware.
-
-| Module | Wiring | What changes |
-|---|---|---|
-| NEO-6M GPS (`USE_GPS 1`, library TinyGPSPlus) | GPS TX → GPIO 16, GPS RX → GPIO 17, 9600 baud | Each reading carries latitude/longitude, a GPS-fix flag and satellites. Without a fix the node sends `SITE_LAT`/`SITE_LON`. The dashboard shows the location and the SMS alert gets a Google Maps link. |
-| SX1278 LoRa (`USE_LORA 1`, library LoRa) | SCK 18, MISO 19, MOSI 23, NSS 5, RST 14, DIO0 2 | For sites without Wi-Fi. The node computes the 10 band energies itself (`band_features.h`) and sends a 36-byte packet (`lora_packet.h`) every 30 s and at once on a state change, so about 20 pumps can share one gateway at SF7. Protection still runs every second. |
-
-With LoRa, a second ESP32 + SX1278 runs `edge/resqfog_lora_gateway` next to the fog server. It forwards each packet to `/data` (features in `"f"`, plus RSSI and SNR) and sends restart commands back to the node right after its next packet. `python3 ml/check_band_features.py` checks the on-device feature code against the Python version (same anomaly decision on all 120 test windows).
+About ₹1,040 per node with hobby modules. On a real pump the L298N is replaced by a relay driving the motor contactor.
 
 ## Setup
 
@@ -102,9 +143,24 @@ cp .env.example .env      # SMS settings (optional)
 python3 fog_server.py
 ```
 
+Open `http://127.0.0.1:5001`, or `http://<laptop-ip>:5001` from a phone on the same network. Then:
+
+1. On **Map & pumps**, select the pump, enter its site and location (click the map, or long-press the pump in Google Maps on site and copy the two numbers) and save.
+2. On **Health**, press **Calibrate** while the pump runs normally (change the speed a little).
+3. Alerts appear under **Maintenance**; acknowledge them there, and log the work done.
+
+The registry, health history, alerts and maintenance log are kept in `resqfog.db` next to the server. A pump calibrated with an older version needs to be calibrated again to get a health score.
+
+| Command | What it runs |
+|---|---|
+| `python3 fog_server.py` | Real edge nodes, real alerts |
+| `python3 fog_server.py --fleet` | Real ESP32 as PUMP-01 plus three simulated pumps |
+| `python3 fog_server.py --demo` | Four simulated pumps, no hardware, no SMS, nothing saved; PUMP-02 wears out over 15 minutes (log a service on it to replace the bearing) |
+| `python3 fog_server.py --test-sms` | Sends one test SMS with the settings in `.env` |
+
 ### SMS alerts
 
-Put the numbers to alert in `SMS_TO` in `.env` (with country code, several separated by commas; if empty, `MANAGER_PHONE` is used), then set up the sender.
+Put the numbers to alert in `SMS_TO` in `.env` (with country code, several separated by commas; if empty, `MANAGER_PHONE` is used), and the supervisor numbers in `SMS_ESCALATE_TO`. Then set up the sender.
 
 **SMSGate on an Android phone (default).** Any Android 5+ phone with a SIM and an SMS pack works; an old phone is fine. Only this phone needs the app, the people receiving get a normal SMS.
 
@@ -125,24 +181,16 @@ The device pump PUMP01 is currently located at 12.96920 79.15590.
 
 Check the settings with `python3 fog_server.py --test-sms` or the **Send test SMS** button on the dashboard.
 
-Open `http://127.0.0.1:5001`, or `http://<laptop-ip>:5001` from a phone on the same network. Then select the pump and press **Calibrate ML** while it runs normally (change the speed a little during the 2 minutes).
-
-| Command | What it runs |
-|---|---|
-| `python3 fog_server.py` | Real edge nodes, real alerts |
-| `python3 fog_server.py --fleet` | Real ESP32 as PUMP-01 plus three simulated pumps |
-| `python3 fog_server.py --demo` | Four simulated pumps, no hardware, no alerts |
-| `python3 fog_server.py --test-sms` | Sends one test SMS with the settings in `.env` |
-
-### Retraining the model
+### Models and experiments
 
 ```bash
-python3 ml/train.py
+python3 ml/train.py           # CWRU: downloads ~100 MB into ml/data/, writes model.joblib, results.json, replay.npz
+python3 ml/experiments.py     # feature ablation, detectors, 10 seeds, leave-one-load-out, bandwidth, timing
+python3 ml/ims_health.py      # health score on the IMS run-to-failure data -> ml/ims_results.json
+python3 tools/fog_eval.py     # data volume, fog and cloud latency, capacity -> tools/fog_eval.json
 ```
 
-This downloads the CWRU files it needs (about 100 MB) into `ml/data/`, and writes `ml/model.joblib`, `ml/results.json` and `ml/replay.npz`.
-
-`python3 ml/experiments.py` runs the extra experiments (feature ablation, detector comparison, 10 seeds, leave-one-load-out, 12 kHz vs MPU6050 bandwidth, timing) and writes `ml/experiments.json`.
+For `ims_health.py`, download [4. Bearings.zip](https://phm-datasets.s3.amazonaws.com/NASA/4.+Bearings.zip) (1.1 GB) from the NASA Prognostics Data Repository, extract `IMS.7z` and the three `.rar` files inside it, and put the folders in `ml/data/ims/` as `1st_test`, `2nd_test` and `3rd_test` (the third one is called `4th_test/txt` in the archive).
 
 The thresholds are in two places and must match: the top of `fog_server.py` and the sketch (1.00 g and 1.20 g).
 
@@ -150,37 +198,49 @@ The thresholds are in two places and must match: the top of `fog_server.py` and 
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /data` | One reading: id, site, vibration, motorSpeed, status, motor, and either `w` (256 values in milli-g) or `f` (10 band energies, from a LoRa node). Optional lat, lon, gps, sats, via, rssi, snr. The reply may contain `"command": "RESET_TRIP"` |
+| `POST /data` | One reading: id, site, vibration, motorSpeed, status, motor, and either `w` (256 values in milli-g) or `f` (10 band energies). The reply may contain `"command": "RESET_TRIP"` |
 | `POST /data/batch` | Readings buffered during an outage, each with its age in ms |
 | `POST /alert` | Critical alert, triggers the SMS |
-| `GET /api/status?machine=PUMP-01` | All pumps plus details of one pump, including its ML state |
-| `POST /api/calibrate` | `{"machine": "PUMP-01"}` – fit the ML model to this pump |
+| `GET /api/status?machine=PUMP-01` | All pumps plus details of one pump: ML, health, spectrum, hours, alerts, maintenance |
+| `GET /api/pumps`, `POST /api/pumps` | Pump registry: list, or add/edit `{"id", "site", "lat", "lon", "motorKw", "installed", "notes"}` |
+| `GET /api/alerts?open=1` | Alerts (all, or only open ones) |
+| `POST /api/alerts/<id>/ack` | `{"by": "Ravi", "note": "going to site"}` |
+| `POST /api/maintenance` | `{"machine", "technician", "action", "notes", "service": true}` |
+| `POST /api/calibrate` | `{"machine": "PUMP-01", "mode": "quick" or "long"}` |
 | `POST /api/command` | `{"machine": "PUMP-01", "command": "RESET_TRIP"}` |
 | `POST /api/reset` | Clear statistics for one pump |
+| `GET /report/<pump>`, `GET /report/<pump>.csv` | Printable pump report, stored history as CSV |
 | `GET /faults/<file>` | Download a fault CSV |
 
 ## Project structure
 
 ```
-fog_server.py               Flask fog server and pump simulator
-templates/dashboard.html    dashboard
-static/                     Chart.js, served locally
+fog_server.py               Flask fog server, alerts, escalation and pump simulator
+store.py                    SQLite: pump registry, health history, alerts, maintenance log
+templates/dashboard.html    dashboard (Overview, Health, Map & pumps, Maintenance)
+templates/report.html       printable pump report
+static/                     Chart.js and Leaflet, served locally
 ml/features.py              band-energy features (used for training and live)
+ml/health.py                pump health score and trend estimate
 ml/train.py                 downloads CWRU data, trains and evaluates the model
 ml/experiments.py           ablation, detector comparison, seeds, cross-load, bandwidth
+ml/ims_health.py            health score on IMS run-to-failure data
 ml/check_band_features.py   checks the ESP32 feature code against Python
-ml/model.joblib             trained model
-ml/results.json             evaluation results
-edge/resqfog_edge/          ESP32 firmware (optional GPS and LoRa modules)
-edge/resqfog_lora_gateway/  ESP32 + SX1278 gateway for LoRa nodes
-docs/                       presentation, screenshots, related work, sample data
+tools/fog_eval.py           fog versus cloud measurements
+edge/resqfog_edge/          ESP32 firmware
+docs/                       screenshots, related work, sample data
 ```
+
+## Experimental: GPS and LoRa
+
+The firmware also has GPS (NEO-6M) and LoRa (SX1278) options with a LoRa gateway in `edge/resqfog_lora_gateway`, switched off by default (`USE_GPS`, `USE_LORA`). They are not part of the evaluated system: a GPS receiver needs open sky, which a pump house does not have, so the location is taken from the registry instead, and most pumping stations have Wi-Fi or mobile data near the pump office. LoRa remains future work for borewells far from any network.
 
 ## Limitations
 
-- The MPU6050 bandwidth (184 Hz) cannot capture the high-frequency impacts of early bearing faults; the model relies on low-frequency band energy.
+- The MPU6050 bandwidth (184 Hz) cannot capture the high-frequency impacts of early bearing faults. On the IMS data this means warnings hours, not days, before an outer-race failure, and one roller failure was missed.
 - In CWRU, healthy and faulty bearings were recorded separately, so part of the difference may come from the recordings themselves (see Smith and Randall, 2015).
-- The model has not yet been tested on faults induced on our own rig. That is the next step, together with a current sensor for dry-running detection.
+- The time-to-poor estimate is a straight line and is too optimistic when wear speeds up.
+- The models have not yet been tested on faults induced on our own rig. That is the next step, together with a current sensor for dry-running detection.
 
 Comparison with existing work: [docs/related_work.md](docs/related_work.md).
 
