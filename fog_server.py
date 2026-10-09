@@ -16,7 +16,6 @@ Run:
 """
 
 import argparse
-import base64
 import csv
 import json
 import math
@@ -45,23 +44,14 @@ from store import Store  # noqa: E402
 
 load_dotenv()
 
-# Alerts are sent as normal SMS, so the receiving phone needs no app.
-#   android:       (default) an Android phone with a SIM running the free,
-#                  open-source SMSGate app (sms-gate.app) in Local Server mode
-#                  on the same Wi-Fi - sends the full alert text
-#   gsm:           an A7670C / SIM800L GSM module on a USB serial port - full text
-#   circuitdigest: free CircuitDigest Cloud SMS API (India, 100 SMS/month,
-#                  fixed templates with two short fields, OTP-verified numbers)
-SMS_BACKEND = os.getenv("SMS_BACKEND", "android").strip().lower()
+# Alerts are sent as normal SMS through the free CircuitDigest Cloud SMS API
+# (India, 100 SMS a month, numbers verified by OTP). SMS services in India only
+# allow registered templates, so each SMS is a fixed sentence with two short
+# fields (see CD_ISSUES below). The receiving phone needs no app.
 CIRCUITDIGEST_API_KEY = os.getenv("CIRCUITDIGEST_API_KEY", "").strip()
 CIRCUITDIGEST_URL = os.getenv("CIRCUITDIGEST_URL", "https://www.circuitdigest.cloud/api/v1/send_sms").strip()
 # numbers to alert; falls back to MANAGER_PHONE from the earlier Twilio setup
 SMS_TO = [n.strip() for n in (os.getenv("SMS_TO") or os.getenv("MANAGER_PHONE") or "").split(",") if n.strip()]
-SMS_GATEWAY_URL = os.getenv("SMS_GATEWAY_URL", "").strip().rstrip("/")
-SMS_GATEWAY_USER = os.getenv("SMS_GATEWAY_USER", "").strip()
-SMS_GATEWAY_PASSWORD = os.getenv("SMS_GATEWAY_PASSWORD", "").strip()
-GSM_PORT = os.getenv("GSM_PORT", "").strip()
-GSM_BAUD = int(os.getenv("GSM_BAUD", "9600") or 9600)
 
 # An alert nobody acknowledges on the dashboard within ESCALATE_AFTER seconds
 # is sent again to these numbers (the supervisor); falls back to SMS_TO.
@@ -78,9 +68,9 @@ CRITICAL_THRESHOLD = 1.20
 # Edge trips the motor after this many consecutive CRITICAL readings (same as TRIP_AFTER on the ESP32)
 TRIP_AFTER = 3
 
-# seconds between alerts of the same kind for the same pump; longer for the
-# CircuitDigest free plan so 100 SMS a month last
-ALERT_COOLDOWN = int(os.getenv("ALERT_COOLDOWN") or (600 if SMS_BACKEND == "circuitdigest" else 60))
+# seconds between alerts of the same kind for the same pump, so that the
+# 100 free SMS a month last
+ALERT_COOLDOWN = int(os.getenv("ALERT_COOLDOWN") or 600)
 EDGE_TIMEOUT = 5           # seconds without telemetry before a node is shown offline
 
 HISTORY_SIZE = 120
@@ -127,12 +117,7 @@ SIM_SITES = [
 
 app = Flask(__name__)
 
-if SMS_BACKEND == "circuitdigest":
-    alerts_enabled = bool(SMS_TO and CIRCUITDIGEST_API_KEY)
-elif SMS_BACKEND == "gsm":
-    alerts_enabled = bool(SMS_TO and GSM_PORT)
-else:
-    alerts_enabled = bool(SMS_TO and SMS_GATEWAY_URL)
+alerts_enabled = bool(SMS_TO and CIRCUITDIGEST_API_KEY)
 
 lock = threading.Lock()
 
@@ -938,128 +923,6 @@ ALERT_TITLES = {
     "health": "HEALTH POOR",
 }
 
-ALERT_ACTIONS = {
-    "critical": "Inspect the pump. Motor trips if this lasts 3 readings.",
-    "tripped": "Inspect, then restart from the dashboard or speed knob.",
-    "ml": "Level still normal, pattern abnormal. Plan an inspection.",
-    "health": "Health keeps falling. Plan maintenance soon.",
-}
-
-
-def sms_safe(text):
-    """Keep to plain GSM characters so every phone shows the message correctly."""
-    return text.encode("ascii", "ignore").decode()
-
-
-def alert_text(m, kind, vibration=None):
-    """The SMS the maintenance team receives."""
-    vibration = m.vibration if vibration is None else vibration
-    lines = [
-        f"ResQFog ALERT: {ALERT_TITLES[kind]}",
-        f"Pump: {m.id} ({m.site})",
-        f"Vibration: {vibration:.2f} g (critical {CRITICAL_THRESHOLD:.2f} g)",
-        f"Motor: {'TRIPPED' if m.motor == 'TRIPPED' else f'running {m.speed_pct}%'}",
-    ]
-    if m.ml_score is not None and m.ml_model:
-        lines.append(f"ML: {m.ml_state.lower()}, score {m.ml_score:.2f}/{m.ml_model['threshold']:.2f}")
-    if m.health is not None:
-        lines.append(f"Health: {m.health:.0f}% ({m.health_level.lower()})")
-    lines.append(f"Time: {datetime.now().strftime('%d-%b %H:%M:%S')}")
-    if m.lat is not None:
-        lines.append(f"Location: {m.lat:.5f},{m.lon:.5f} ({'GPS' if m.gps_fix else 'installed'})")
-        lines.append(f"Map: {maps_link(m.lat, m.lon)}")
-    if m.link == "LoRa" and m.rssi is not None:
-        lines.append(f"Link: LoRa {m.rssi} dBm")
-    lines.append(ALERT_ACTIONS[kind])
-    return sms_safe("\n".join(lines))
-
-
-def split_sms(text, size=153):
-    """Split into SMS-sized parts at line breaks (for the GSM module)."""
-    parts, current = [], ""
-    for line in text.split("\n"):
-        candidate = f"{current}\n{line}" if current else line
-        if len(candidate) <= size - 6:
-            current = candidate
-        else:
-            if current:
-                parts.append(current)
-            current = line[: size - 6]
-    if current:
-        parts.append(current)
-    if len(parts) > 1:
-        parts = [f"({i}/{len(parts)}) {p}" for i, p in enumerate(parts, 1)]
-    return parts
-
-
-def send_via_android(numbers, text):
-    """SMS Gateway for Android, local server mode (Basic auth, JSON)."""
-    body = json.dumps({"textMessage": {"text": text}, "phoneNumbers": numbers}).encode()
-    auth = base64.b64encode(f"{SMS_GATEWAY_USER}:{SMS_GATEWAY_PASSWORD}".encode()).decode()
-    last_error = None
-    # the endpoint is /message in older app versions and /messages in newer ones
-    for path in ("/message", "/messages"):
-        request = urllib.request.Request(
-            SMS_GATEWAY_URL + path, data=body,
-            headers={"Content-Type": "application/json", "Authorization": f"Basic {auth}"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                if 200 <= response.status < 300:
-                    return
-        except urllib.error.HTTPError as e:
-            last_error = f"gateway replied {e.code}"
-            if e.code == 404:
-                continue
-            raise RuntimeError(last_error)
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"phone gateway not reachable ({e.reason})")
-    raise RuntimeError(last_error or "gateway did not accept the message")
-
-
-class GsmModem:
-    """Sends SMS with AT commands through a SIM800L / A7670 module."""
-
-    def __init__(self, stream):
-        self.stream = stream
-
-    def command(self, text, expect=("OK",), timeout=5.0):
-        self.stream.write(text.encode())
-        return self.wait(expect, timeout)
-
-    def wait(self, expect, timeout):
-        reply, end = "", time.time() + timeout
-        while time.time() < end:
-            chunk = self.stream.read(64)
-            if chunk:
-                reply += chunk.decode(errors="ignore")
-                if "ERROR" in reply:
-                    raise RuntimeError("modem: " + reply.strip().splitlines()[-1])
-                if any(e in reply for e in expect):
-                    return reply
-            else:
-                time.sleep(0.05)
-        raise RuntimeError("modem did not answer (check wiring, power and SIM)")
-
-    def send(self, number, text):
-        self.command("AT\r")
-        self.command("AT+CMGF=1\r")                       # text mode
-        self.command(f'AT+CMGS="{number}"\r', expect=(">",))
-        self.command(text + "\x1a", expect=("+CMGS",), timeout=30.0)
-
-
-gsm_lock = threading.Lock()
-
-
-def send_via_gsm(numbers, text):
-    import serial   # pyserial, only needed for the GSM module
-    with gsm_lock, serial.Serial(GSM_PORT, GSM_BAUD, timeout=0.2) as port:
-        modem = GsmModem(port)
-        for number in numbers:
-            for part in split_sms(text):
-                modem.send(number, part)
-
-
 # CircuitDigest templates (two fields each, at most 30 letters/digits):
 #   113 "The {#var#} requires maintenance. Detected issue: {#var#}."
 #   110 "The device {#var#} is currently located at {#var#}."
@@ -1113,17 +976,7 @@ def send_via_circuitdigest(numbers, messages):
                 raise RuntimeError(f"CircuitDigest not reachable ({e.reason})")
 
 
-def deliver_sms(text, messages=None, numbers=None):
-    numbers = numbers or SMS_TO
-    if SMS_BACKEND == "circuitdigest":
-        send_via_circuitdigest(numbers, messages)
-    elif SMS_BACKEND == "gsm":
-        send_via_gsm(numbers, text)
-    else:
-        send_via_android(numbers, text)
-
-
-def send_alert(m, kind, text=None, vibration=None, messages=None, alert_id=None):
+def send_alert(m, kind, vibration=None, messages=None, alert_id=None):
     """Send one alert SMS to every configured number. Call without the lock held."""
     now = time.time()
 
@@ -1139,11 +992,10 @@ def send_alert(m, kind, text=None, vibration=None, messages=None, alert_id=None)
                     store.set_alert(alert_id, sms="COOLDOWN")
                 return False
             m.last_alerts[kind] = now
-            text = alert_text(m, kind, vibration)
             messages = cd_messages(m, kind, vibration)
 
     try:
-        deliver_sms(text, messages)
+        send_via_circuitdigest(SMS_TO, messages)
     except Exception as e:
         with lock:
             alert_state["status"] = "FAILED"
@@ -1164,7 +1016,7 @@ def send_alert(m, kind, text=None, vibration=None, messages=None, alert_id=None)
         if alert_id:
             store.set_alert(alert_id, sms="SENT")
 
-    print(f"SMS sent ({kind}) to {len(SMS_TO)} number(s) via {SMS_BACKEND}")
+    print(f"SMS sent ({kind}) to {len(SMS_TO)} number(s)")
     return True
 
 
@@ -1216,20 +1068,6 @@ def handle_alert(m, vibration, pwm, status, motor=None, allow_alert=True):
     return send_alert(m, "critical", vibration=vibration, alert_id=alert_id)
 
 
-def escalation_text(m, a):
-    minutes = max(1, round((time.time() - a["t"]) / 60))
-    lines = [
-        "ResQFog ESCALATION: alert not acknowledged",
-        f"Pump: {a['pump']} ({m.site if m else ''})",
-        f"Alert #{a['id']}: {a['title']} at {date_str(a['t'])}",
-        f"Open for {minutes} min, repeated {a['count']}x",
-    ]
-    if m is not None and m.lat is not None:
-        lines.append(f"Map: {maps_link(m.lat, m.lon)}")
-    lines.append("Acknowledge it on the ResQFog dashboard.")
-    return sms_safe("\n".join(lines))
-
-
 def escalate_once(now=None):
     """Send unacknowledged alerts older than ESCALATE_AFTER to the supervisor numbers."""
     now = now or time.time()
@@ -1242,13 +1080,13 @@ def escalate_once(now=None):
                 m.add_event("alert", f"Alert #{a['id']} escalated",
                             "Not acknowledged in time" + (" (simulated, no SMS)" if simulated or not alerts_enabled
                                                           else ", supervisor notified"))
-            text = escalation_text(m, a)
         if simulated or not alerts_enabled:
             continue
+        # "The pump PUMP01 requires maintenance. Detected issue: unacknowledged critical alert."
         pump = cd_field(f"pump {a['pump']}")
         try:
-            deliver_sms(text, [(113, pump, cd_field(f"unacknowledged {a['kind']} alert"))],
-                        numbers=SMS_ESCALATE_TO or SMS_TO)
+            send_via_circuitdigest(SMS_ESCALATE_TO or SMS_TO,
+                                   [(113, pump, cd_field(f"unacknowledged {a['kind']} alert"))])
             print(f"Escalation SMS sent for alert #{a['id']}")
         except Exception as e:
             with lock:
@@ -1321,7 +1159,7 @@ def api_status():
             "thresholds": {"warning": WARNING_THRESHOLD, "critical": CRITICAL_THRESHOLD},
             "alerts": {
                 "enabled": alerts_enabled,
-                "channel": {"circuitdigest": "SMS (CircuitDigest)", "gsm": "SMS (GSM module)"}.get(SMS_BACKEND, "SMS (Android phone)"),
+                "channel": "SMS (CircuitDigest)",
                 "recipients": len(SMS_TO),
                 "status": alert_state["status"],
                 "sent": alert_state["sent"],
@@ -1602,18 +1440,15 @@ def alert():
     })
 
 
+# "Your ResQFog fog server is currently at online test SMS OK."
 CD_TEST = [(101, "ResQFog fog server", "online test SMS OK")]
-
-
-def test_sms_text():
-    return f"ResQFog test SMS: alerts from the fog server reach this number. {datetime.now().strftime('%d-%b %H:%M:%S')}"
 
 
 @app.route("/test-sms", methods=["GET", "POST"])
 def test_sms():
     if not alerts_enabled:
         return jsonify({"status": "NOT_SENT", "reason": "SMS not configured in .env"}), 500
-    if send_alert(None, "test", test_sms_text(), messages=CD_TEST):
+    if send_alert(None, "test", messages=CD_TEST):
         return jsonify({"status": "SENT"})
     return jsonify({"status": "NOT_SENT", "reason": alert_state["status"]}), 500
 
@@ -1774,7 +1609,7 @@ if __name__ == "__main__":
         if not alerts_enabled:
             print("SMS not configured in .env (see .env.example)")
             sys.exit(1)
-        sys.exit(0 if send_alert(None, "test", test_sms_text(), messages=CD_TEST) else 1)
+        sys.exit(0 if send_alert(None, "test", messages=CD_TEST) else 1)
 
     demo_mode = args.demo
 
@@ -1813,8 +1648,7 @@ if __name__ == "__main__":
     else:
         print("MODE: LIVE")
     if alerts_enabled:
-        via = {"circuitdigest": "CircuitDigest", "gsm": "GSM module"}.get(SMS_BACKEND, "Android phone")
-        print(f"Alerts:     SMS via {via} to {len(SMS_TO)} number(s), {ALERT_COOLDOWN // 60} min cooldown")
+        print(f"Alerts:     SMS via CircuitDigest to {len(SMS_TO)} number(s), {ALERT_COOLDOWN // 60} min cooldown")
     else:
         print("WARNING: SMS not configured in .env - alerts disabled")
     print(f"Thresholds: warning {WARNING_THRESHOLD:.2f} g, critical {CRITICAL_THRESHOLD:.2f} g")

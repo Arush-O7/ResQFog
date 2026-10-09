@@ -75,22 +75,14 @@ So at the MPU6050's bandwidth the score never raised a false alarm, warned befor
 
 Alerts are sent for critical vibration, a motor trip, an ML early warning and a pump whose health becomes poor. Each one is logged as an open alert until someone acknowledges it on the dashboard; repeats while it is open only raise its count. If nobody acknowledges it within 10 minutes (`ESCALATE_AFTER`), it is sent again to the supervisor numbers in `SMS_ESCALATE_TO`.
 
-The SMS is sent from an ordinary SIM card, so it carries the full details and needs no app on the receiving phone:
+The SMS goes out through the free [CircuitDigest Cloud](https://www.circuitdigest.cloud) SMS API, so no app is needed on the receiving phone. SMS services in India only allow pre-registered templates, so each alert is a fixed sentence with two short fields (pump and issue), followed by a second SMS with the location from the pump registry:
 
 ```
-ResQFog ALERT: CRITICAL vibration
-Pump: PUMP-07 (Bagayam Sump)
-Vibration: 1.31 g (critical 1.20 g)
-Motor: running 78%
-ML: normal, score 0.47/0.55
-Health: 81% (good)
-Time: 09-Oct 22:46:12
-Location: 12.93421,79.13310 (installed)
-Map: https://maps.google.com/?q=12.93421,79.13310
-Inspect the pump. Motor trips if this lasts 3 readings.
+The pump PUMP07 Bagayam Sump requires maintenance. Detected issue: critical vibration 1.31g.
+The device pump PUMP07 is currently located at 12.93421 79.13310.
 ```
 
-The location comes from the pump registry, so the node needs no GPS. SMS APIs in India only allow pre-registered templates, so the alert is sent through an Android phone running the free SMSGate app (default), or through a GSM module. A template-based CircuitDigest option is also included.
+An escalation reads "The pump PUMP07 requires maintenance. Detected issue: unacknowledged critical alert." The full details (reading, motor state, ML score, health, map link) are on the dashboard.
 
 ## What the fog tier saves
 
@@ -105,7 +97,7 @@ Measured with `python3 tools/fog_eval.py` on our laptop (results in [tools/fog_e
 | HTTPS round trip to the nearest cloud region (AWS Mumbai) | 164 ms with a new connection, 55 ms with a kept-open one |
 | Readings the fog handles per second (20 pumps sending flat out) | about 367, so one laptop can serve a few hundred pumps at 1 Hz |
 
-And when the internet is down, the alarm, the motor trip, the dashboard and the SMS from the local phone all keep working.
+And when the internet is down, the alarm, the motor trip and the dashboard keep working, and alerts stay open on the dashboard. Only the SMS needs the internet, because it goes through the CircuitDigest API.
 
 ## Other features
 
@@ -160,24 +152,11 @@ The registry, health history, alerts and maintenance log are kept in `resqfog.db
 
 ### SMS alerts
 
-Put the numbers to alert in `SMS_TO` in `.env` (with country code, several separated by commas; if empty, `MANAGER_PHONE` is used), and the supervisor numbers in `SMS_ESCALATE_TO`. Then set up the sender.
+1. Sign up at [circuitdigest.cloud](https://www.circuitdigest.cloud) and verify every number that should receive alerts with the OTP (up to 5 numbers).
+2. Copy the API key from your account into `CIRCUITDIGEST_API_KEY` in `.env`.
+3. Put the numbers in `SMS_TO` (with country code, several separated by commas) and the supervisor numbers for escalation in `SMS_ESCALATE_TO`.
 
-**SMSGate on an Android phone (default).** Any Android 5+ phone with a SIM and an SMS pack works; an old phone is fine. Only this phone needs the app, the people receiving get a normal SMS.
-
-1. Download and install the APK from [sms-gate.app](https://sms-gate.app) (free, open source, no account needed).
-2. Open the app, turn on **Local Server** and keep the phone on the same Wi-Fi as the fog computer.
-3. Copy the address shown in the app (for example `http://192.168.1.20:8080`), the username and the password into `SMS_GATEWAY_URL`, `SMS_GATEWAY_USER` and `SMS_GATEWAY_PASSWORD`.
-
-The phone sends the full alert shown above from its own SIM, so the text is not limited to a template. Prepaid plans in India usually include about 100 SMS a day, which is plenty with one alert per pump and type per minute.
-
-**GSM module (permanent installation).** Connect an A7670C (4G) or SIM800L module with a SIM to the fog computer through a USB-serial adapter, set `SMS_BACKEND=gsm` and `GSM_PORT` (for example `/dev/tty.usbserial-0001`, or `COM3` on Windows). The SIM800L only works on 2G, so it needs an Airtel or Vi SIM; the A7670C also works with Jio. Needs `pip install pyserial`. Long alerts are sent as two SMS parts.
-
-**CircuitDigest Cloud (no phone or module).** A free SMS API for makers in India: set `SMS_BACKEND=circuitdigest`, sign up at [circuitdigest.cloud](https://www.circuitdigest.cloud), verify each receiving number with the OTP (up to 5) and copy the API key into `CIRCUITDIGEST_API_KEY`. It only sends fixed templates with two short fields, so the alert arrives in their wording without the map link, and the free plan allows 100 SMS a month (alerts limited to one every 10 minutes):
-
-```
-The pump PUMP01 VIT Main Sump requires maintenance. Detected issue: critical vibration 1.31g.
-The device pump PUMP01 is currently located at 12.96920 79.15590.
-```
+The free plan allows 100 SMS a month. An alert uses one SMS per number, or two when the pump has a location, so alerts of the same type for one pump are limited to one every 10 minutes (`ALERT_COOLDOWN`). The fog computer needs internet access to send them.
 
 Check the settings with `python3 fog_server.py --test-sms` or the **Send test SMS** button on the dashboard.
 
