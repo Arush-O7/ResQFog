@@ -1169,6 +1169,7 @@ def api_status():
                 "escalateTo": len(SMS_ESCALATE_TO or SMS_TO),
             },
             "openAlertsTotal": len(store.alerts(open_only=True, limit=500)),
+            "pumpsWithAlerts": len({a["pump"] for a in store.alerts(open_only=True, limit=500)}),
             "fleet": [m.summary(now) for m in fleet],
             **detail,
         })
@@ -1307,6 +1308,12 @@ def api_ack(alert_id):
         if m is not None:
             m.add_event("info", f"Alert #{alert_id} acknowledged", f"by {by}")
     return jsonify({"status": "ACKNOWLEDGED"})
+
+
+@app.route("/api/maintenance", methods=["GET"])
+def api_maintenance_list():
+    pump = request.args.get("machine", "").upper() or None
+    return jsonify({"maintenance": [maintenance_row(r) for r in store.maintenance(pump, limit=100)]})
 
 
 @app.route("/api/maintenance", methods=["POST"])

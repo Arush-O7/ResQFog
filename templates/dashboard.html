@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ResQFog Monitor</title>
+<title>ResQFog Pump Monitor</title>
 <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
 <link rel="stylesheet" href="{{ url_for('static', filename='leaflet/leaflet.css') }}">
 <script src="{{ url_for('static', filename='leaflet/leaflet.js') }}"></script>
@@ -12,554 +12,214 @@
 :root {
     --bg: #070b14;
     --surface: #0d1526;
-    --surface-2: #111c31;
+    --surface-2: #121d33;
     --border: #1c2a42;
     --border-soft: #16233a;
-    --text: #e6edf9;
-    --text-2: #9aa8c0;
-    --muted: #64748b;
+    --text: #eef3fb;
+    --text-2: #a7b4c9;
+    --muted: #6b7a92;
     --accent: #3b82f6;
-    --accent-2: #06b6d4;
-    --normal: #22c55e;
-    --normal-bg: rgba(34, 197, 94, .12);
-    --warning: #f5b821;
-    --warning-bg: rgba(245, 184, 33, .12);
-    --critical: #f43f5e;
-    --critical-bg: rgba(244, 63, 94, .13);
-    --offline: #64748b;
-    --offline-bg: rgba(100, 116, 139, .14);
-    --radius: 14px;
+    --good: #22c55e;
+    --good-bg: rgba(34, 197, 94, .13);
+    --warn: #f5b821;
+    --warn-bg: rgba(245, 184, 33, .13);
+    --bad: #f43f5e;
+    --bad-bg: rgba(244, 63, 94, .14);
+    --idle: #64748b;
+    --idle-bg: rgba(100, 116, 139, .15);
+    --radius: 16px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
     background: var(--bg);
     color: var(--text);
+    font-size: 15px;
+    line-height: 1.45;
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
 }
 
 .num { font-variant-numeric: tabular-nums; }
+svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+[hidden] { display: none !important; }
 
-svg.i {
-    width: 18px; height: 18px;
-    fill: none; stroke: currentColor;
-    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
-    flex-shrink: 0;
-}
-
+/* header */
 .header {
     position: sticky; top: 0; z-index: 20;
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 16px;
-    padding: 14px 28px;
-    background: rgba(9, 14, 26, .92);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 24px;
+    background: rgba(9, 14, 26, .94);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--border);
 }
-
 .brand { display: flex; align-items: center; gap: 12px; }
-
-.brand-mark {
-    width: 40px; height: 40px; border-radius: 11px;
-    display: grid; place-items: center;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: #fff;
-}
-
-.brand-mark svg.i { width: 22px; height: 22px; }
-
-.brand h1 { font-size: 18px; letter-spacing: .3px; }
-.brand p { font-size: 12px; color: var(--muted); margin-top: 2px; }
-
+.brand-mark { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; background: linear-gradient(135deg, #3b82f6, #06b6d4); color: #fff; }
+.brand h1 { font-size: 18px; }
+.brand p { font-size: 12px; color: var(--muted); }
 .header-right { display: flex; align-items: center; gap: 10px; }
-
-.pill {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 7px 12px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    font-size: 12px; color: var(--text-2);
-    white-space: nowrap;
-}
-
-.pill.mode-demo { color: var(--warning); border-color: rgba(245,184,33,.35); }
-.pill.mode-live { color: var(--normal); border-color: rgba(34,197,94,.35); }
-
-.dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--offline);
-}
-
-.dot.on { background: var(--normal); box-shadow: 0 0 10px var(--normal); }
-.dot.off { background: var(--critical); }
-
-.container {
-    max-width: 1520px;
-    margin: 0 auto;
-    padding: 24px 28px 40px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 18px;
-}
-
-.row { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
-.row-hero { grid-template-columns: 2fr 1fr; }
-.row-kpi { grid-template-columns: repeat(5, 1fr); }
-.row-main { grid-template-columns: 2.1fr 1fr; }
-.row-bottom { grid-template-columns: 1fr 1fr 1.35fr; }
-
-.panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px;
-    min-width: 0;
-}
-
-.panel-head {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 8px 12px;
-    flex-wrap: wrap;
-    margin-bottom: 16px;
-}
-
-.panel-head h3 { font-size: 15px; font-weight: 600; }
-.panel-head .hint { font-size: 12px; color: var(--muted); }
-
-.hero {
-    display: flex; flex-direction: column; justify-content: space-between; gap: 22px;
-    position: relative;
-    overflow: hidden;
-    border-left: 4px solid var(--offline);
-    transition: border-color .3s;
-}
-
-.hero[data-state="NORMAL"] { border-left-color: var(--normal); }
-.hero[data-state="WARNING"] { border-left-color: var(--warning); }
-.hero[data-state="CRITICAL"] { border-left-color: var(--critical); animation: critPulse 1.4s ease-in-out infinite; }
-.hero[data-state="TRIPPED"] { border-left-color: var(--critical); }
-
-@keyframes critPulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(244,63,94,0); }
-    50% { box-shadow: 0 0 0 1px rgba(244,63,94,.55), 0 0 28px rgba(244,63,94,.18); }
-}
-
-.hero-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-
-.hero-left { display: flex; align-items: center; gap: 16px; }
-
-.hero-icon {
-    width: 54px; height: 54px; border-radius: 14px;
-    display: grid; place-items: center;
-    background: var(--offline-bg); color: var(--offline);
-}
-
-.hero-icon svg.i { width: 26px; height: 26px; }
-
-.hero h2 { font-size: 21px; font-weight: 650; margin-bottom: 5px; }
-.hero p { font-size: 13px; color: var(--text-2); }
-
-.badge {
-    padding: 7px 14px;
-    border-radius: 999px;
-    font-size: 12px; font-weight: 700; letter-spacing: .8px;
-    background: var(--offline-bg); color: var(--text-2);
-    white-space: nowrap;
-}
-
-[data-tone="NORMAL"] .hero-icon, .badge[data-tone="NORMAL"] { background: var(--normal-bg); color: var(--normal); }
-[data-tone="WARNING"] .hero-icon, .badge[data-tone="WARNING"] { background: var(--warning-bg); color: var(--warning); }
-[data-tone="CRITICAL"] .hero-icon, .badge[data-tone="CRITICAL"],
-[data-tone="TRIPPED"] .hero-icon, .badge[data-tone="TRIPPED"] { background: var(--critical-bg); color: var(--critical); }
-
-.hero-machine { font-size: 12px; color: var(--muted); letter-spacing: .4px; margin-bottom: 4px; }
-.hero-machine b { color: var(--text-2); font-weight: 600; }
-.hero-right { display: flex; align-items: center; gap: 10px; }
-.btn.btn-danger { color: #fff; background: var(--critical); border-color: var(--critical); }
-.btn.btn-danger:hover { color: #fff; filter: brightness(1.1); }
-
-.machines { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
-.machine {
-    display: flex; align-items: center; gap: 12px;
-    padding: 11px 12px;
-    border-radius: 11px;
-    background: var(--surface-2);
-    border: 1px solid var(--border-soft);
-    cursor: pointer;
-    text-align: left; font: inherit; color: inherit; width: 100%;
-}
-.machine:hover { border-color: #2a3b58; }
-.machine.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-.machine .sdot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--offline); }
-.machine-body { flex: 1; min-width: 0; }
-.machine-title { font-size: 13px; font-weight: 600; }
-.machine-sub { font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.machine-val { text-align: right; font-size: 13px; font-weight: 600; }
-.machine-val small { display: block; font-size: 10px; font-weight: 700; letter-spacing: .6px; margin-top: 2px; }
-.sim-tag { font-size: 9px; font-weight: 700; letter-spacing: .5px; color: var(--muted); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
-
-.scale { margin-top: 0; }
-
-.hero-facts {
-    display: grid; grid-template-columns: repeat(6, 1fr);
-    border-top: 1px solid var(--border-soft);
-    padding-top: 18px;
-}
-
-.fact { padding: 0 16px; border-left: 1px solid var(--border-soft); min-width: 0; }
-.fact:first-child { padding-left: 0; border-left: none; }
-.fact-k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 6px; }
-.fact-v { font-size: 17px; font-weight: 650; }
-
-.scale-track {
-    position: relative;
-    height: 12px;
-    border-radius: 999px;
-    display: flex;
-    overflow: visible;
-}
-
-.scale-track span:first-child { border-radius: 999px 0 0 999px; }
-.scale-track span:last-child { border-radius: 0 999px 999px 0; }
-
-.zone-n { background: rgba(34,197,94,.35); }
-.zone-w { background: rgba(245,184,33,.4); }
-.zone-c { background: rgba(244,63,94,.45); }
-
-.scale-marker {
-    position: absolute; top: -6px;
-    width: 4px; height: 24px; margin-left: -2px;
-    border-radius: 2px;
-    background: #fff;
-    box-shadow: 0 0 0 3px var(--surface), 0 0 12px rgba(255,255,255,.4);
-    left: 0;
-    transition: left .5s ease;
-}
-
-.scale-labels {
-    position: relative;
-    height: 16px;
-    margin-top: 8px;
-    font-size: 11px; color: var(--muted);
-}
-
-.scale-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
-.scale-labels span:first-child { transform: none; }
-.scale-labels span:last-child { transform: translateX(-100%); }
-
-.pipeline { display: grid; gap: 10px; }
-
-.node {
-    display: flex; align-items: center; gap: 12px;
-    padding: 11px 12px;
-    border-radius: 11px;
-    background: var(--surface-2);
-    border: 1px solid var(--border-soft);
-}
-
-.node-icon {
-    width: 34px; height: 34px; border-radius: 9px;
-    display: grid; place-items: center;
-    background: rgba(59,130,246,.12); color: var(--accent);
-}
-
-.node-body { flex: 1; min-width: 0; }
-.node-title { font-size: 13px; font-weight: 600; }
-.node-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
-
-.node-state { font-size: 11px; font-weight: 700; letter-spacing: .6px; display: flex; align-items: center; gap: 6px; color: var(--text-2); }
-
-.link {
-    height: 12px;
-    margin-left: 28px;
-    border-left: 2px dashed var(--border);
-}
-
-.link.active { border-left-color: var(--accent); animation: flow 1s linear infinite; }
-
-@keyframes flow { 50% { border-left-color: var(--accent-2); } }
-
-.kpi { display: flex; flex-direction: column; gap: 12px; }
-
-.kpi-head { display: flex; align-items: center; justify-content: space-between; }
-
-.kpi-label {
-    font-size: 11px; color: var(--text-2);
-    text-transform: uppercase; letter-spacing: 1px;
-}
-
-.kpi-icon {
-    width: 32px; height: 32px; border-radius: 9px;
-    display: grid; place-items: center;
-    background: var(--surface-2); color: var(--text-2);
-}
-
-.kpi-icon svg.i { width: 16px; height: 16px; }
-
-.kpi-value { font-size: 30px; font-weight: 700; letter-spacing: -.5px; line-height: 1; }
-.kpi-unit { font-size: 13px; color: var(--muted); margin-left: 4px; font-weight: 500; }
-.kpi-sub { font-size: 12px; color: var(--muted); }
-
-.bar {
-    height: 6px; border-radius: 999px;
-    background: var(--surface-2);
-    overflow: hidden;
-}
-
-.bar > div {
-    height: 100%; width: 0;
-    border-radius: 999px;
-    background: linear-gradient(90deg, var(--accent), var(--accent-2));
-    transition: width .4s ease;
-}
-
-.tone-NORMAL { color: var(--normal); }
-.tone-WARNING { color: var(--warning); }
-.tone-CRITICAL, .tone-TRIPPED, .tone-OFFLINE { color: var(--critical); }
-.tone-WAITING { color: var(--muted); }
-
-.chart-box { position: relative; height: 330px; }
-
-.legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-2); flex-wrap: wrap; }
-.legend span { display: inline-flex; align-items: center; gap: 6px; }
-.legend i { width: 14px; height: 0; border-top: 2px dashed; display: inline-block; }
-
-.metric {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 12px;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--border-soft);
-    font-size: 13px;
-}
-
-.metric:last-child { border-bottom: none; padding-bottom: 0; }
-.metric:first-child { padding-top: 0; }
-.metric .k { color: var(--text-2); }
-.metric .v { font-weight: 600; text-align: right; }
-
-.dist-bar {
-    display: flex; height: 14px;
-    border-radius: 999px; overflow: hidden;
-    background: var(--surface-2);
-    margin-bottom: 18px;
-}
-
-.dist-bar div { transition: width .5s ease; }
-
-.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 8px; }
-
-.events { max-height: 290px; overflow-y: auto; margin-right: -8px; padding-right: 8px; }
-
-.event { display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border-soft); }
-.event:last-child { border-bottom: none; }
-
-.event-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; background: var(--offline); }
-.event-dot.normal { background: var(--normal); }
-.event-dot.warning { background: var(--warning); }
-.event-dot.critical { background: var(--critical); }
-.event-dot.sms, .event-dot.alert { background: var(--accent-2); }
-.event-dot.info { background: var(--accent); }
-
-.event-main { flex: 1; min-width: 0; }
-.event-title { font-size: 13px; font-weight: 600; }
-.event-detail { font-size: 12px; color: var(--text-2); margin-top: 2px; overflow-wrap: anywhere; }
-.event-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
-
-.empty { font-size: 13px; color: var(--muted); padding: 20px 0; text-align: center; }
-
-.actions { display: flex; gap: 8px; flex-wrap: wrap; }
-
-.btn {
-    display: inline-flex; align-items: center; gap: 7px;
-    padding: 8px 12px;
-    border-radius: 9px;
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--text-2);
-    font: inherit; font-size: 12px; font-weight: 600;
-    cursor: pointer;
-}
-
-.btn:hover { color: var(--text); border-color: #2a3b58; }
-.btn svg.i { width: 14px; height: 14px; }
-.btn:disabled { opacity: .5; cursor: default; }
-
-.toast {
-    position: fixed; right: 20px; bottom: 20px; z-index: 30;
-    padding: 12px 16px;
-    border-radius: 10px;
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    font-size: 13px;
-    opacity: 0; transform: translateY(8px);
-    transition: all .25s;
-    pointer-events: none;
-}
-
-.toast.show { opacity: 1; transform: none; }
-
-.rec-banner {
-    display: none;
-    align-items: center; gap: 14px; flex-wrap: wrap;
-    padding: 12px 14px;
-    margin-bottom: 14px;
-    border-radius: 11px;
-    background: var(--critical-bg);
-    border: 1px solid rgba(244,63,94,.3);
-    font-size: 13px;
-}
-
-.rec-banner.show { display: flex; }
-
-.rec-dot {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: var(--critical);
-    animation: blink 1s ease-in-out infinite;
-}
-
-@keyframes blink { 50% { opacity: .25; } }
-
-.rec-text { flex: 1; min-width: 200px; }
-.rec-banner .bar { flex: 1; min-width: 140px; }
-.rec-banner .bar > div { background: var(--critical); }
-
-.table-wrap { overflow-x: auto; }
-
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-
-th {
-    text-align: left;
-    font-size: 11px; font-weight: 600; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .8px;
-    padding: 0 12px 10px 0;
-    border-bottom: 1px solid var(--border-soft);
-    white-space: nowrap;
-}
-
-td {
-    padding: 11px 12px 11px 0;
-    border-bottom: 1px solid var(--border-soft);
-    white-space: nowrap;
-}
-
-tr:last-child td { border-bottom: none; }
-
-th.r, td.r { text-align: right; }
-
-.tag {
-    display: inline-block;
-    margin-left: 8px;
-    padding: 2px 7px;
-    border-radius: 6px;
-    font-size: 10px; font-weight: 700; letter-spacing: .5px;
-    background: var(--warning-bg); color: var(--warning);
-}
-
-a.btn { text-decoration: none; }
-
-.footer { text-align: center; padding: 8px 0 28px; color: #4d5b72; font-size: 12px; }
-
-/* tabs */
-.tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 0; }
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); font-size: 13px; color: var(--text-2); white-space: nowrap; }
+.pill.demo { color: var(--warn); border-color: rgba(245,184,33,.35); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--idle); }
+.dot.on { background: var(--good); box-shadow: 0 0 10px var(--good); }
+.dot.off { background: var(--bad); }
+.alert-btn { font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.alert-btn.has { color: #fff; background: var(--bad); border-color: var(--bad); }
+
+/* layout */
+.container { max-width: 1280px; margin: 0 auto; padding: 20px 24px 40px; display: grid; gap: 18px; }
+.tabs { display: flex; gap: 8px; flex-wrap: wrap; }
 .tab-btn {
     display: inline-flex; align-items: center; gap: 8px;
-    padding: 10px 16px; margin-bottom: -1px;
-    border: 1px solid transparent; border-radius: 10px 10px 0 0;
-    background: none; color: var(--text-2);
-    font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    padding: 11px 18px; border-radius: 12px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+    font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
 }
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--text); background: var(--surface); border-color: var(--border); border-bottom-color: var(--surface); }
-.tab-btn .count { min-width: 18px; padding: 1px 6px; border-radius: 999px; background: var(--critical); color: #fff; font-size: 11px; }
-.tab-btn .count:empty, .tab-btn .count[data-n="0"] { display: none; }
+.tab-btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+.tab-btn .count { min-width: 22px; padding: 1px 7px; border-radius: 999px; background: var(--bad); color: #fff; font-size: 12px; }
+.tab-btn .count[data-n="0"] { display: none; }
 .tab { display: grid; gap: 18px; }
-.tab[hidden] { display: none; }
 
-.pill.alerts { color: var(--critical); border-color: rgba(244,63,94,.4); cursor: pointer; }
-.pill.alerts[data-n="0"] { color: var(--text-2); border-color: var(--border); }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; min-width: 0; }
+.panel h3 { font-size: 17px; margin-bottom: 14px; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.panel-head h3 { margin-bottom: 0; }
+.hint { font-size: 13px; color: var(--muted); }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.grid-main { display: grid; grid-template-columns: 1.7fr 1fr; gap: 18px; align-items: start; }
 
-/* health */
-.row-health { grid-template-columns: 1fr 1.6fr; }
-.row-two { grid-template-columns: 1fr 1fr; }
-.row-maint { grid-template-columns: 1.3fr 1fr; }
-.row-map { grid-template-columns: 1.6fr 1fr; }
+/* tones */
+.t-good { color: var(--good); } .t-warn { color: var(--warn); } .t-bad { color: var(--bad); } .t-idle { color: var(--idle); }
 
-.health-big { display: flex; align-items: baseline; gap: 10px; }
-.health-big .val { font-size: 56px; font-weight: 750; letter-spacing: -1px; line-height: 1; }
-.health-big .unit { font-size: 20px; color: var(--muted); }
-.health-track { position: relative; height: 12px; border-radius: 999px; display: flex; overflow: visible; margin: 18px 0 8px; }
-.health-track span:first-child { border-radius: 999px 0 0 999px; }
-.health-track span:last-child { border-radius: 0 999px 999px 0; }
-.lvl-GOOD { color: var(--normal); }
-.lvl-WATCH { color: var(--warning); }
-.lvl-POOR { color: var(--critical); }
-.lvl-UNKNOWN { color: var(--muted); }
-.note { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 12px; }
+/* pump cards */
+.pumps { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.pump {
+    text-align: left; font: inherit; color: inherit; cursor: pointer;
+    padding: 14px 16px; border-radius: 14px;
+    background: var(--surface); border: 1px solid var(--border); border-left: 6px solid var(--idle);
+    display: grid; gap: 6px;
+}
+.pump.good { border-left-color: var(--good); } .pump.warn { border-left-color: var(--warn); } .pump.bad { border-left-color: var(--bad); }
+.pump.selected { box-shadow: 0 0 0 2px var(--accent); }
+.pump-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.pump-name { font-size: 16px; font-weight: 700; }
+.pump-site { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pump-status { font-size: 14px; font-weight: 600; }
+.sim { font-size: 10px; font-weight: 700; letter-spacing: .5px; color: var(--muted); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; margin-left: 6px; vertical-align: 2px; }
 
-/* map */
-#map { height: 430px; border-radius: 11px; background: var(--surface-2); }
-.leaflet-container { font: inherit; }
-.leaflet-popup-content { font-size: 13px; line-height: 1.5; }
+/* status card */
+.status { display: flex; gap: 18px; align-items: flex-start; border-left: 6px solid var(--idle); }
+.status.good { border-left-color: var(--good); } .status.warn { border-left-color: var(--warn); } .status.bad { border-left-color: var(--bad); }
+.status-icon { width: 60px; height: 60px; border-radius: 16px; display: grid; place-items: center; background: var(--idle-bg); color: var(--idle); flex-shrink: 0; }
+.status.good .status-icon { background: var(--good-bg); color: var(--good); }
+.status.warn .status-icon { background: var(--warn-bg); color: var(--warn); }
+.status.bad .status-icon { background: var(--bad-bg); color: var(--bad); }
+.status-icon svg.i { width: 30px; height: 30px; }
+.status-body { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.status-pump { font-size: 14px; color: var(--muted); }
+.status-pump b { color: var(--text-2); }
+.status-title { font-size: 26px; font-weight: 750; line-height: 1.2; }
+.todo { margin-top: 6px; padding: 12px 14px; border-radius: 12px; background: var(--surface-2); font-size: 15px; }
+.todo b { color: var(--text-2); }
+.status-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 
-/* forms */
-.form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* tiles */
+.tile { display: grid; gap: 8px; align-content: start; }
+.tile-label { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; }
+.tile-value { font-size: 30px; font-weight: 750; line-height: 1.1; }
+.tile-value small { font-size: 15px; color: var(--muted); font-weight: 500; margin-left: 4px; }
+.tile-word { font-size: 15px; font-weight: 600; }
+.tile-note { font-size: 14px; color: var(--text-2); }
+.meter { position: relative; height: 12px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.meter > div { height: 100%; width: 0; border-radius: 999px; transition: width .4s ease, background .3s; background: var(--good); }
+
+.chart-box { position: relative; height: 280px; }
+.legend { display: flex; gap: 14px; font-size: 13px; color: var(--text-2); flex-wrap: wrap; }
+.legend i { width: 16px; height: 0; border-top: 2px dashed; display: inline-block; margin-right: 6px; vertical-align: middle; }
+
+/* lists */
+.list { display: grid; gap: 10px; }
+.row { display: flex; gap: 14px; align-items: center; padding: 14px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border-soft); }
+.row.urgent { border-color: rgba(244,63,94,.45); }
+.row-main { flex: 1; min-width: 0; }
+.row-title { font-size: 15px; font-weight: 650; }
+.row-sub { font-size: 13px; color: var(--text-2); margin-top: 2px; overflow-wrap: anywhere; }
+.event-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--idle); }
+.event-dot.normal { background: var(--good); } .event-dot.warning { background: var(--warn); } .event-dot.critical { background: var(--bad); }
+.event-dot.alert { background: #06b6d4; } .event-dot.info { background: var(--accent); }
+.time { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.tag { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; margin-left: 8px; vertical-align: 1px; background: var(--idle-bg); color: var(--text-2); }
+.tag.red { background: var(--bad-bg); color: var(--bad); } .tag.green { background: var(--good-bg); color: var(--good); }
+.empty { color: var(--muted); padding: 16px 0; text-align: center; font-size: 14px; }
+
+/* buttons and forms */
+.btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 10px 16px; border-radius: 11px;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+    font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.btn:hover { border-color: #2d4163; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn svg.i { width: 16px; height: 16px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+.btn.big { padding: 13px 20px; font-size: 15px; }
+.btn.link { background: none; border-color: transparent; color: var(--text-2); }
+.form { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form .full { grid-column: 1 / -1; }
-.field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-2); }
+.field { display: grid; gap: 6px; font-size: 14px; color: var(--text-2); }
 .field input, .field select, .field textarea {
-    font: inherit; font-size: 13px; color: var(--text);
-    background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px;
-    padding: 9px 10px; width: 100%;
+    font: inherit; font-size: 15px; color: var(--text);
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; width: 100%;
 }
-.field textarea { resize: vertical; min-height: 60px; }
+.field textarea { min-height: 70px; resize: vertical; }
 .field input:focus, .field select:focus, .field textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
-.btn.btn-primary { color: #fff; background: var(--accent); border-color: var(--accent); }
-.btn.btn-primary:hover { color: #fff; filter: brightness(1.1); }
+.check { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--text-2); }
+.check input { width: 18px; height: 18px; }
 
-/* alert and log lists */
-.items { display: grid; gap: 10px; max-height: 420px; overflow-y: auto; }
-.item {
-    display: flex; gap: 12px; align-items: flex-start;
-    padding: 12px; border-radius: 11px;
-    background: var(--surface-2); border: 1px solid var(--border-soft);
-}
-.item.open { border-color: rgba(244,63,94,.4); }
-.item-main { flex: 1; min-width: 0; }
-.item-title { font-size: 13px; font-weight: 600; }
-.item-sub { font-size: 12px; color: var(--text-2); margin-top: 3px; overflow-wrap: anywhere; }
-.tagx { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .5px; padding: 2px 7px; border-radius: 6px; margin-left: 6px; background: var(--offline-bg); color: var(--text-2); vertical-align: 1px; }
-.tagx.red { background: var(--critical-bg); color: var(--critical); }
-.tagx.green { background: var(--normal-bg); color: var(--normal); }
-.tagx.amber { background: var(--warning-bg); color: var(--warning); }
-td.wrap { white-space: normal; }
+/* technical details */
+.tech-toggle { justify-self: start; }
+.tech-note { font-size: 13px; color: var(--muted); line-height: 1.55; margin-top: 10px; }
+.kv { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-soft); font-size: 14px; }
+.kv:last-child { border-bottom: none; }
+.kv span:first-child { color: var(--text-2); }
+.kv span:last-child { font-weight: 600; text-align: right; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; padding: 0 12px 10px 0; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+td { padding: 11px 12px 11px 0; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+.table-wrap { overflow-x: auto; }
+.r { text-align: right; }
 
-@media (max-width: 1250px) {
-    .row-kpi { grid-template-columns: repeat(3, 1fr); }
-    .row-bottom { grid-template-columns: 1fr 1fr; }
-    .row-bottom > .panel:last-child { grid-column: 1 / -1; }
-}
+#map { height: 440px; border-radius: 12px; background: var(--surface-2); }
+.leaflet-container { font: inherit; }
+
+dialog { margin: auto; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); padding: 22px; width: min(420px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgba(0,0,0,.6); }
+dialog h3 { font-size: 18px; margin-bottom: 6px; }
+dialog p { font-size: 14px; color: var(--text-2); margin-bottom: 16px; }
+dialog .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+
+.toast { position: fixed; right: 20px; bottom: 20px; z-index: 40; padding: 13px 18px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); font-size: 14px; opacity: 0; transform: translateY(8px); transition: all .25s; pointer-events: none; }
+.toast.show { opacity: 1; transform: none; }
+.footer { text-align: center; padding: 6px 0 28px; color: #4d5b72; font-size: 12px; }
 
 @media (max-width: 980px) {
-    .row-hero, .row-main, .row-health, .row-two, .row-maint, .row-map { grid-template-columns: minmax(0, 1fr); }
-    .row-kpi { grid-template-columns: repeat(2, 1fr); }
+    .grid-2, .grid-3, .grid-main { grid-template-columns: minmax(0, 1fr); }
 }
-
 @media (max-width: 640px) {
-    .header { padding: 12px 16px; }
-    .header .hide-sm { display: none; }
-    .container { padding: 16px; gap: 14px; }
-    .row { gap: 14px; }
-    .row-kpi, .row-bottom { grid-template-columns: minmax(0, 1fr); }
-    .hero-top { flex-direction: column; align-items: flex-start; }
-    .hero-facts { grid-template-columns: 1fr 1fr; row-gap: 16px; }
+    .header { padding: 10px 14px; }
+    .hide-sm { display: none !important; }
+    .container { padding: 14px 16px 32px; gap: 14px; }
+    .status { flex-direction: column; }
+    .status-title { font-size: 22px; }
     .form { grid-template-columns: minmax(0, 1fr); }
-    .tab-btn { padding: 9px 10px; font-size: 12px; }
-    .fact:nth-child(odd) { padding-left: 0; border-left: none; }
-    .chart-box { height: 260px; }
+    .tab-btn { padding: 10px 13px; font-size: 14px; }
+    .row { flex-wrap: wrap; }
 }
 </style>
 </head>
@@ -570,24 +230,15 @@ td.wrap { white-space: normal; }
     <symbol id="i-activity" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
-    <symbol id="i-octagon" viewBox="0 0 24 24"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></symbol>
     <symbol id="i-wifi-off" viewBox="0 0 24 24"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></symbol>
-    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></symbol>
-    <symbol id="i-server" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></symbol>
-    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></symbol>
-    <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
-    <symbol id="i-trend" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></symbol>
-    <symbol id="i-avg" viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><polyline points="3 6 8 9 13 5 21 8"/><polyline points="3 18 8 15 13 19 21 16"/></symbol>
-    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
-    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
-    <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></symbol>
-    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
-    <symbol id="i-send" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
-    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78z"/></symbol>
-    <symbol id="i-map" viewBox="0 0 24 24"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></symbol>
     <symbol id="i-tool" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
     <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
 </svg>
 
 <header class="header">
@@ -595,945 +246,244 @@ td.wrap { white-space: normal; }
         <div class="brand-mark"><svg class="i"><use href="#i-activity"/></svg></div>
         <div>
             <h1>ResQFog</h1>
-            <p>Pumping station condition monitoring</p>
+            <p>Pump monitor</p>
         </div>
     </div>
-
     <div class="header-right">
-        <span class="pill hide-sm" id="modePill">LIVE</span>
-        <span class="pill alerts" id="alertPill" data-n="0" title="Open alerts waiting for acknowledgement"><svg class="i" style="width:14px;height:14px"><use href="#i-bell"/></svg><span id="alertPillText">0 open alerts</span></span>
-        <span class="pill"><span class="dot" id="fogDot"></span><span id="fogText">Connecting…</span></span>
-        <span class="pill hide-sm num"><svg class="i" style="width:14px;height:14px"><use href="#i-clock"/></svg><span id="clock">--:--:--</span></span>
+        <span class="pill demo" id="demoPill" hidden>Demo</span>
+        <button class="pill alert-btn" id="alertBtn"><svg class="i" style="width:16px;height:16px"><use href="#i-bell"/></svg><span id="alertBtnText">No alerts</span></button>
+        <span class="pill hide-sm"><span class="dot" id="sysDot"></span><span id="sysText">Connecting…</span></span>
     </div>
 </header>
 
 <main class="container">
 
-    <section class="row">
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Pumps</h3>
-                <span class="hint" id="fleetHint">--</span>
-            </div>
-            <div class="machines" id="machines"></div>
-        </div>
-
-    </section>
-
-    <nav class="tabs" id="tabs">
-        <button class="tab-btn active" data-tab="overview"><svg class="i" style="width:15px;height:15px"><use href="#i-grid"/></svg>Overview</button>
-        <button class="tab-btn" data-tab="health"><svg class="i" style="width:15px;height:15px"><use href="#i-heart"/></svg>Health</button>
-        <button class="tab-btn" data-tab="map"><svg class="i" style="width:15px;height:15px"><use href="#i-map"/></svg>Map &amp; pumps</button>
-        <button class="tab-btn" data-tab="maintenance"><svg class="i" style="width:15px;height:15px"><use href="#i-tool"/></svg>Maintenance <span class="count" id="tabAlertCount" data-n="0"></span></button>
+    <nav class="tabs">
+        <button class="tab-btn active" data-tab="pumps"><svg class="i" style="width:17px;height:17px"><use href="#i-grid"/></svg>Pumps</button>
+        <button class="tab-btn" data-tab="work"><svg class="i" style="width:17px;height:17px"><use href="#i-tool"/></svg>Alerts &amp; work <span class="count" id="tabCount" data-n="0"></span></button>
+        <button class="tab-btn" data-tab="map"><svg class="i" style="width:17px;height:17px"><use href="#i-map"/></svg>Map</button>
     </nav>
 
-    <div class="tab" id="tab-overview">
+    <!-- ============================ PUMPS ============================ -->
+    <div class="tab" id="tab-pumps">
 
-    <section class="row row-hero">
+        <div class="pumps" id="pumpCards"></div>
 
-        <div class="panel hero" id="hero" data-state="WAITING" data-tone="WAITING">
-            <div class="hero-top">
-                <div class="hero-left">
-                    <div class="hero-icon"><svg class="i" id="heroIcon"><use href="#i-activity"/></svg></div>
-                    <div>
-                        <div class="hero-machine" id="heroMachine">--</div>
-                        <h2 id="heroTitle">Waiting for Edge Node</h2>
-                        <p id="heroDesc">No telemetry received yet. Power on the ESP32 to begin monitoring.</p>
+        <section class="panel status" id="statusCard">
+            <div class="status-icon"><svg class="i" id="statusIcon"><use href="#i-activity"/></svg></div>
+            <div class="status-body">
+                <div class="status-pump" id="statusPump">--</div>
+                <div class="status-title" id="statusTitle">Connecting…</div>
+                <div class="todo"><b>What to do:</b> <span id="statusTodo">--</span></div>
+                <div class="status-actions">
+                    <button class="btn danger big" id="btnRestart" hidden><svg class="i"><use href="#i-refresh"/></svg>Restart motor</button>
+                    <button class="btn primary big" id="btnGoAlerts" hidden><svg class="i"><use href="#i-bell"/></svg><span id="btnGoAlertsText">See alerts</span></button>
+                </div>
+            </div>
+        </section>
+
+        <section class="grid-3">
+            <div class="panel tile">
+                <div class="tile-label">Vibration</div>
+                <div class="tile-value num" id="vibValue">--<small>g</small></div>
+                <div class="tile-word" id="vibWord">--</div>
+                <div class="meter"><div id="vibBar"></div></div>
+                <div class="tile-note num">High from {{ '%.2f'|format(warning) }} g, too high from {{ '%.2f'|format(critical) }} g</div>
+            </div>
+            <div class="panel tile">
+                <div class="tile-label">Condition</div>
+                <div class="tile-value num" id="condValue">--</div>
+                <div class="tile-word" id="condWord">--</div>
+                <div class="meter"><div id="condBar"></div></div>
+                <div class="tile-note" id="condNote">--</div>
+            </div>
+            <div class="panel tile">
+                <div class="tile-label">Motor</div>
+                <div class="tile-value" id="motorValue" style="font-size:24px">--</div>
+                <div class="tile-note" id="motorNote">--</div>
+                <div class="tile-note" id="serviceNote">--</div>
+            </div>
+        </section>
+
+        <section class="grid-main">
+            <div class="panel">
+                <div class="panel-head">
+                    <h3>Vibration, last 2 minutes</h3>
+                    <div class="legend"><span><i style="border-color:var(--warn)"></i>High</span><span><i style="border-color:var(--bad)"></i>Too high</span></div>
+                </div>
+                <div class="chart-box"><canvas id="vibChart"></canvas></div>
+            </div>
+            <div class="panel">
+                <h3>Recent activity</h3>
+                <div class="list" id="activity"><div class="empty">Nothing yet</div></div>
+            </div>
+        </section>
+
+        <button class="btn link tech-toggle" id="techToggle"><svg class="i"><use href="#i-chevron"/></svg><span id="techToggleText">Show technical details</span></button>
+
+        <div class="tab" id="tech" hidden>
+            <section class="grid-2">
+                <div class="panel">
+                    <div class="panel-head"><h3>Condition over time</h3><span class="hint" id="healthHint">--</span></div>
+                    <div class="chart-box"><canvas id="healthChart"></canvas></div>
+                </div>
+                <div class="panel">
+                    <div class="panel-head"><h3>Vibration spectrum</h3><span class="hint">latest window against normal running</span></div>
+                    <div class="chart-box"><canvas id="specChart"></canvas></div>
+                    <p class="tech-note" id="specNote">--</p>
+                </div>
+            </section>
+            <section class="grid-2">
+                <div class="panel">
+                    <h3>Machine learning and setup</h3>
+                    <div class="kv"><span>Model</span><span id="mlModel">--</span></div>
+                    <div class="kv"><span>Pattern check (3 of 5 windows)</span><span id="mlState">--</span></div>
+                    <div class="kv"><span>Anomaly score / limit</span><span class="num" id="mlScore">--</span></div>
+                    <div class="kv"><span>Condition trend</span><span class="num" id="healthTrend">--</span></div>
+                    <div class="status-actions" style="margin-top:14px">
+                        <button class="btn" id="btnCalQuick"><svg class="i"><use href="#i-activity"/></svg>Calibrate (2 min)</button>
+                        <button class="btn" id="btnCalLong"><svg class="i"><use href="#i-activity"/></svg>Calibrate (1 hour)</button>
+                    </div>
+                    <p class="tech-note">Calibrate once after installing the sensor, while the pump runs normally. The condition score then compares every reading with this pump's own normal running (median of the last {{ smooth }} points; a level change must hold for {{ sustain }} points). Good above {{ watch }} %, maintenance needed below {{ poor }} %.</p>
+                </div>
+                <div class="panel">
+                    <h3>System</h3>
+                    <div class="kv"><span>Sensor (edge node)</span><span id="sysEdge">--</span></div>
+                    <div class="kv"><span>Last reading</span><span class="num" id="sysLast">--</span></div>
+                    <div class="kv"><span>Readings per second</span><span class="num" id="sysRate">--</span></div>
+                    <div class="kv"><span>Recovered after an outage</span><span class="num" id="sysRecovered">--</span></div>
+                    <div class="kv"><span>Fog server running for</span><span class="num" id="sysUptime">--</span></div>
+                    <div class="kv"><span>SMS</span><span id="sysSms">--</span></div>
+                    <div class="status-actions" style="margin-top:14px">
+                        <button class="btn" id="btnSms">Send test SMS</button>
+                        <button class="btn" id="btnReset">Reset statistics</button>
                     </div>
                 </div>
-                <div class="hero-right">
-                    <button class="btn btn-danger" id="btnRestart" style="display:none"><svg class="i"><use href="#i-refresh"/></svg>Restart motor</button>
-                    <div class="badge" id="heroBadge" data-tone="WAITING">WAITING</div>
+            </section>
+            <section class="panel">
+                <div class="panel-head"><h3>Fault recordings</h3><span class="hint">50 readings before and after each critical event</span></div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Time</th><th class="r">Reading</th><th class="r">Peak</th><th class="r">Avg before</th><th class="r">Avg after</th><th class="r"></th></tr></thead>
+                        <tbody id="faultRows"></tbody>
+                    </table>
                 </div>
-            </div>
-
-            <div class="scale">
-                <div class="scale-track" id="scaleTrack">
-                    <span class="zone-n" id="zoneN"></span>
-                    <span class="zone-w" id="zoneW"></span>
-                    <span class="zone-c" id="zoneC"></span>
-                    <div class="scale-marker" id="scaleMarker"></div>
-                </div>
-                <div class="scale-labels num" id="scaleLabels"></div>
-            </div>
-
-            <div class="hero-facts">
-                <div class="fact"><div class="fact-k">Current reading</div><div class="fact-v num" id="fCur">-- g</div></div>
-                <div class="fact"><div class="fact-k">Headroom to critical</div><div class="fact-v num" id="fHead">-- g</div></div>
-                <div class="fact"><div class="fact-k">Health score</div><div class="fact-v num" id="fHealth">--</div></div>
-                <div class="fact"><div class="fact-k">ML pattern</div><div class="fact-v" id="fMl">--</div></div>
-                <div class="fact"><div class="fact-k">In this state</div><div class="fact-v num" id="fFor">--</div></div>
-                <div class="fact"><div class="fact-k">Recommended action</div><div class="fact-v" id="fAct">--</div></div>
-            </div>
+            </section>
         </div>
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Data Pipeline</h3>
-                <span class="hint">Edge → Fog → Cloud</span>
-            </div>
-
-            <div class="pipeline">
-                <div class="node">
-                    <div class="node-icon"><svg class="i"><use href="#i-cpu"/></svg></div>
-                    <div class="node-body">
-                        <div class="node-title">Edge Node</div>
-                        <div class="node-sub" id="pEdgeSub">ESP32 + MPU6050 · threshold detection</div>
-                    </div>
-                    <div class="node-state" id="pEdge"><span class="dot"></span>WAITING</div>
-                </div>
-                <div class="link" id="link1"></div>
-                <div class="node">
-                    <div class="node-icon"><svg class="i"><use href="#i-server"/></svg></div>
-                    <div class="node-body">
-                        <div class="node-title">Fog Server</div>
-                        <div class="node-sub">Flask · aggregation & alert routing</div>
-                    </div>
-                    <div class="node-state" id="pFog"><span class="dot"></span>--</div>
-                </div>
-                <div class="link" id="link2"></div>
-                <div class="node">
-                    <div class="node-icon"><svg class="i"><use href="#i-phone"/></svg></div>
-                    <div class="node-body">
-                        <div class="node-title">Cloud Alerting</div>
-                        <div class="node-sub">SMS via CircuitDigest → maintenance team</div>
-                    </div>
-                    <div class="node-state" id="pSms"><span class="dot"></span>--</div>
-                </div>
-            </div>
-        </div>
-
-    </section>
-
-    <section class="row row-kpi">
-
-        <div class="panel kpi">
-            <div class="kpi-head">
-                <span class="kpi-label">Vibration</span>
-                <span class="kpi-icon"><svg class="i"><use href="#i-activity"/></svg></span>
-            </div>
-            <div><span class="kpi-value num" id="kVib">0.00</span><span class="kpi-unit">g</span></div>
-            <div class="kpi-sub">Live acceleration deviation</div>
-        </div>
-
-        <div class="panel kpi">
-            <div class="kpi-head">
-                <span class="kpi-label">Motor Speed</span>
-                <span class="kpi-icon"><svg class="i"><use href="#i-gauge"/></svg></span>
-            </div>
-            <div><span class="kpi-value num" id="kSpeed">0</span><span class="kpi-unit">%</span></div>
-            <div class="bar"><div id="kSpeedBar"></div></div>
-            <div class="kpi-sub num" id="kPwm">PWM 0 / 255</div>
-        </div>
-
-        <div class="panel kpi">
-            <div class="kpi-head">
-                <span class="kpi-label">Session Average</span>
-                <span class="kpi-icon"><svg class="i"><use href="#i-avg"/></svg></span>
-            </div>
-            <div><span class="kpi-value num" id="kAvg">0.00</span><span class="kpi-unit">g</span></div>
-            <div class="kpi-sub num" id="kSamples">0 samples</div>
-        </div>
-
-        <div class="panel kpi">
-            <div class="kpi-head">
-                <span class="kpi-label">Session Peak</span>
-                <span class="kpi-icon"><svg class="i"><use href="#i-trend"/></svg></span>
-            </div>
-            <div><span class="kpi-value num" id="kMax">0.00</span><span class="kpi-unit">g</span></div>
-            <div class="kpi-sub num" id="kMaxTime">Recorded at --</div>
-        </div>
-
-        <div class="panel kpi">
-            <div class="kpi-head">
-                <span class="kpi-label">Critical Alerts</span>
-                <span class="kpi-icon"><svg class="i"><use href="#i-bell"/></svg></span>
-            </div>
-            <div><span class="kpi-value num" id="kAlerts">0</span></div>
-            <div class="kpi-sub num" id="kSms">0 SMS sent</div>
-        </div>
-
-    </section>
-
-    <section class="row row-main">
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Live Vibration</h3>
-                <div class="legend">
-                    <span><i style="border-color:var(--warning)"></i>Warning {{ '%.2f'|format(warning) }} g</span>
-                    <span><i style="border-color:var(--critical)"></i>Critical {{ '%.2f'|format(critical) }} g</span>
-                </div>
-            </div>
-            <div class="chart-box"><canvas id="chart"></canvas></div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>System Health</h3>
-                <span class="hint">Auto-refresh 1s</span>
-            </div>
-
-            <div class="metric"><span class="k">Edge node</span><span class="v" id="hEdge">WAITING</span></div>
-            <div class="metric"><span class="k">Motor</span><span class="v" id="hMotor">--</span></div>
-            <div class="metric"><span class="k">Location</span><span class="v num" id="hLoc">--</span></div>
-            <div class="metric"><span class="k">Link</span><span class="v num" id="hLink">--</span></div>
-            <div class="metric"><span class="k">Last telemetry</span><span class="v num" id="hLast">--</span></div>
-            <div class="metric"><span class="k">Data rate</span><span class="v num" id="hRate">0.0 msg/s</span></div>
-            <div class="metric"><span class="k">Recovered after outage</span><span class="v num" id="hRecovered">0 readings</span></div>
-            <div class="metric"><span class="k">Fog uptime</span><span class="v num" id="hUptime">0s</span></div>
-            <div class="metric"><span class="k">SMS alerts</span><span class="v" id="hSms">--</span></div>
-            <div class="metric"><span class="k">Last SMS</span><span class="v num" id="hSmsLast">--</span></div>
-        </div>
-
-    </section>
-
-    <section class="row row-bottom">
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Machine Condition</h3>
-                <span class="hint">Time in each state</span>
-            </div>
-
-            <div class="dist-bar">
-                <div id="dN" style="background:var(--normal);width:0"></div>
-                <div id="dW" style="background:var(--warning);width:0"></div>
-                <div id="dC" style="background:var(--critical);width:0"></div>
-            </div>
-
-            <div class="metric"><span class="k"><span class="swatch" style="background:var(--normal)"></span>Normal</span><span class="v num" id="pN">0%</span></div>
-            <div class="metric"><span class="k"><span class="swatch" style="background:var(--warning)"></span>Warning</span><span class="v num" id="pW">0%</span></div>
-            <div class="metric"><span class="k"><span class="swatch" style="background:var(--critical)"></span>Critical</span><span class="v num" id="pC">0%</span></div>
-            <div class="metric"><span class="k">Minimum reading</span><span class="v num" id="kMin">0.00 g</span></div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Detection</h3>
-                <span class="hint">Edge thresholds + fog ML</span>
-            </div>
-
-            <div class="metric"><span class="k"><span class="swatch" style="background:var(--normal)"></span>Normal</span><span class="v num">&lt; {{ '%.2f'|format(warning) }} g</span></div>
-            <div class="metric"><span class="k"><span class="swatch" style="background:var(--warning)"></span>Warning</span><span class="v num">{{ '%.2f'|format(warning) }} – {{ '%.2f'|format(critical) }} g</span></div>
-            <div class="metric"><span class="k"><span class="swatch" style="background:var(--critical)"></span>Critical</span><span class="v num">≥ {{ '%.2f'|format(critical) }} g</span></div>
-            <div class="metric"><span class="k">Protection</span><span class="v">Motor trip after {{ trip_after }} critical readings</span></div>
-            <div class="metric"><span class="k">ML model</span><span class="v" id="mlModel">--</span></div>
-            <div class="metric"><span class="k">ML anomaly score</span><span class="v num" id="mlScore">--</span></div>
-
-            <div class="actions" style="margin-top:16px">
-                <button class="btn" id="btnReset"><svg class="i"><use href="#i-refresh"/></svg>Reset session</button>
-                <button class="btn" id="btnSms"><svg class="i"><use href="#i-send"/></svg>Send test SMS</button>
-                <button class="btn" id="btnCalibrate"><svg class="i"><use href="#i-activity"/></svg>Calibrate ML (2 min)</button>
-            </div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Event Log</h3>
-                <span class="hint">Latest 20</span>
-            </div>
-            <div class="events" id="events">
-                <div class="empty">No events yet</div>
-            </div>
-        </div>
-
-    </section>
-
-    <section class="row">
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Fault Recordings</h3>
-                <span class="hint" id="faultHint">Samples before and after each critical event · CSV</span>
-            </div>
-
-            <div class="rec-banner" id="recBanner">
-                <span class="rec-dot"></span>
-                <span class="rec-text num" id="recText">Recording…</span>
-                <div class="bar"><div id="recBar"></div></div>
-            </div>
-
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Fault time</th>
-                            <th class="r">Fault reading</th>
-                            <th class="r">Peak</th>
-                            <th class="r">Avg before</th>
-                            <th class="r">Avg after</th>
-                            <th class="r">Samples (before / after)</th>
-                            <th class="r">Data</th>
-                        </tr>
-                    </thead>
-                    <tbody id="faultRows"></tbody>
-                </table>
-            </div>
-        </div>
-
-    </section>
-
     </div>
 
-    <!-- ============================ HEALTH ============================ -->
-    <div class="tab" id="tab-health" hidden>
+    <!-- ============================ ALERTS & WORK ============================ -->
+    <div class="tab" id="tab-work" hidden>
 
-    <section class="row row-health">
+        <section class="panel">
+            <div class="panel-head"><h3>Alerts waiting for someone</h3><span class="hint" id="escHint">--</span></div>
+            <div class="list" id="openAlerts"><div class="empty">No alerts. All pumps are fine.</div></div>
+        </section>
 
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Pump Health</h3>
-                <span class="hint" id="hInterval">--</span>
+        <section class="grid-2">
+            <div class="panel">
+                <h3>Record work done</h3>
+                <form class="form" id="workForm" autocomplete="off">
+                    <label class="field">Pump<select id="wPump"></select></label>
+                    <label class="field">Your name<input id="wName" required maxlength="40"></label>
+                    <label class="field full">What was done
+                        <select id="wAction">
+                            <option>Checked, no problem found</option>
+                            <option>Bearing greased</option>
+                            <option>Bearing replaced</option>
+                            <option>Alignment corrected</option>
+                            <option>Bolts tightened</option>
+                            <option>Impeller cleaned</option>
+                            <option>Other</option>
+                        </select>
+                    </label>
+                    <label class="field full">Notes (optional)<textarea id="wNotes" maxlength="500"></textarea></label>
+                    <label class="check full"><input type="checkbox" id="wService"> This was a full service</label>
+                    <div class="status-actions full"><button class="btn primary big" type="submit"><svg class="i"><use href="#i-check"/></svg>Save</button></div>
+                </form>
             </div>
-            <div class="health-big"><span class="val num" id="hScore">--</span><span class="unit">%</span><span class="badge" id="hLevel" style="margin-left:auto">--</span></div>
-            <div class="health-track">
-                <span style="width:{{ poor }}%;background:rgba(244,63,94,.45)"></span>
-                <span style="width:{{ watch - poor }}%;background:rgba(245,184,33,.4)"></span>
-                <span style="width:{{ 100 - watch }}%;background:rgba(34,197,94,.35)"></span>
-                <div class="scale-marker" id="hMarker"></div>
-            </div>
-            <div class="scale-labels num"><span style="left:0">0</span><span style="left:{{ poor }}%">{{ poor }} poor</span><span style="left:{{ watch }}%">{{ watch }} watch</span><span style="left:100%">100</span></div>
-
-            <div style="margin-top:18px">
-                <div class="metric"><span class="k">Trend</span><span class="v num" id="hTrend">--</span></div>
-                <div class="metric"><span class="k">Time to "poor" at the current rate</span><span class="v num" id="hEta">--</span></div>
-                <div class="metric"><span class="k">Baseline</span><span class="v" id="hBaseline">--</span></div>
-                <div class="metric"><span class="k">ML pattern (3 of 5 windows)</span><span class="v" id="hMl">--</span></div>
-            </div>
-            <div class="actions" style="margin-top:16px">
-                <button class="btn" id="btnCalQuick"><svg class="i"><use href="#i-activity"/></svg>Calibrate (2 min)</button>
-                <button class="btn" id="btnCalLong"><svg class="i"><use href="#i-clock"/></svg>Calibrate (1 hour)</button>
-            </div>
-            <p class="note">The health score compares every vibration window with this pump's own normal running (100 % = like calibration). It is the median of the last {{ smooth }} points, and a level change has to hold for {{ sustain }} points. The time estimate is a straight line through the last hours: wear usually speeds up near the end, so treat it as an upper limit.</p>
-        </div>
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Health Trend</h3>
-                <div class="legend">
-                    <span><i style="border-color:var(--warning)"></i>Watch {{ watch }} %</span>
-                    <span><i style="border-color:var(--critical)"></i>Poor {{ poor }} %</span>
+            <div class="panel">
+                <div class="panel-head">
+                    <h3>Work history</h3>
+                    <a class="btn" id="btnReport" target="_blank" rel="noopener"><svg class="i"><use href="#i-file"/></svg>Pump report</a>
                 </div>
+                <div class="list" id="workHistory"><div class="empty">Nothing recorded yet</div></div>
             </div>
-            <div class="chart-box"><canvas id="healthChart"></canvas></div>
-        </div>
-
-    </section>
-
-    <section class="row">
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Vibration Spectrum</h3>
-                <span class="hint">Latest window against normal running · red bands are more than 3 standard deviations away</span>
-            </div>
-            <div class="chart-box" style="height:300px"><canvas id="specChart"></canvas></div>
-            <p class="note" id="specNote">--</p>
-        </div>
-    </section>
-
+        </section>
     </div>
 
     <!-- ============================ MAP ============================ -->
     <div class="tab" id="tab-map" hidden>
-
-    <section class="row row-map">
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Pump Locations</h3>
-                <span class="hint" id="mapHint">Click the map to set the location of the pump in the form</span>
-            </div>
+        <section class="panel">
+            <div class="panel-head"><h3>Where the pumps are</h3><span class="hint" id="mapHint">Tap a pump to open it</span></div>
             <div id="map"></div>
-        </div>
+        </section>
 
-        <div class="panel">
+        <section class="panel">
             <div class="panel-head">
-                <h3 id="formTitle">Pump details</h3>
-                <button class="btn" id="btnNewPump"><svg class="i"><use href="#i-grid"/></svg>Add pump</button>
+                <h3>Pump list</h3>
+                <button class="btn" id="btnAddPump">Add a pump</button>
             </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Pump</th><th>Site</th><th>Status</th><th class="r">Condition</th><th class="r">Running hours</th><th class="r"></th></tr></thead>
+                    <tbody id="pumpRows"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel" id="editPanel" hidden>
+            <div class="panel-head"><h3 id="editTitle">Pump details</h3><span class="hint">Tap the map to set the location</span></div>
             <form class="form" id="pumpForm" autocomplete="off">
                 <label class="field">Pump ID<input id="pId" required maxlength="16" placeholder="PUMP-05"></label>
                 <label class="field">Site name<input id="pSite" maxlength="40" placeholder="Katpadi Pump House"></label>
-                <label class="field">Latitude<input id="pLat" inputmode="decimal" placeholder="12.96920"></label>
-                <label class="field">Longitude<input id="pLon" inputmode="decimal" placeholder="79.15590"></label>
-                <label class="field">Motor rating (kW)<input id="pKw" inputmode="decimal" placeholder="3.7"></label>
-                <label class="field">Installed on<input id="pInstalled" type="date"></label>
-                <label class="field full">Notes<textarea id="pNotes" maxlength="200" placeholder="Pump make, impeller, bearing type"></textarea></label>
-                <div class="actions full"><button class="btn btn-primary" type="submit"><svg class="i"><use href="#i-check"/></svg>Save</button></div>
+                <label class="field">Latitude<input id="pLat" inputmode="decimal"></label>
+                <label class="field">Longitude<input id="pLon" inputmode="decimal"></label>
+                <label class="field">Motor (kW, optional)<input id="pKw" inputmode="decimal"></label>
+                <label class="field">Installed on (optional)<input id="pInstalled" type="date"></label>
+                <label class="field full">Notes (optional)<textarea id="pNotes" maxlength="200"></textarea></label>
+                <div class="status-actions full">
+                    <button class="btn primary big" type="submit"><svg class="i"><use href="#i-check"/></svg>Save</button>
+                    <button class="btn big" type="button" id="btnCancelEdit">Cancel</button>
+                </div>
             </form>
-            <p class="note">The location comes from here, so the node needs no GPS: on site, long-press the pump's position in Google Maps and copy the two numbers. The SMS alert then carries a map link.</p>
-        </div>
-
-    </section>
-
-    <section class="row">
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Pump Registry</h3>
-                <span class="hint" id="regHint">--</span>
-            </div>
-            <div class="table-wrap">
-                <table>
-                    <thead><tr><th>Pump</th><th>Site</th><th>State</th><th class="r">Health</th><th class="r">Run hours</th><th class="r">Service due in</th><th class="r">Open alerts</th><th>Location</th><th class="r"></th></tr></thead>
-                    <tbody id="regRows"></tbody>
-                </table>
-            </div>
-        </div>
-    </section>
-
-    </div>
-
-    <!-- ============================ MAINTENANCE ============================ -->
-    <div class="tab" id="tab-maintenance" hidden>
-
-    <section class="row row-maint">
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Open Alerts · all pumps</h3>
-                <span class="hint" id="escHint">--</span>
-            </div>
-            <div class="items" id="openAlerts"><div class="empty">No open alerts</div></div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Running Hours</h3>
-                <span class="hint" id="hoursHint">--</span>
-            </div>
-            <div class="metric"><span class="k">Total running hours</span><span class="v num" id="rTotal">--</span></div>
-            <div class="metric"><span class="k">Since last service</span><span class="v num" id="rSince">--</span></div>
-            <div class="metric"><span class="k">Service interval</span><span class="v num" id="rEvery">--</span></div>
-            <div class="bar" style="margin:14px 0 4px"><div id="rBar"></div></div>
-            <div class="kpi-sub num" id="rDue">--</div>
-            <div class="actions" style="margin-top:18px">
-                <a class="btn" id="btnReport" target="_blank" rel="noopener"><svg class="i"><use href="#i-file"/></svg>Pump report (print to PDF)</a>
-                <a class="btn" id="btnHistory"><svg class="i"><use href="#i-download"/></svg>History CSV</a>
-            </div>
-        </div>
-
-    </section>
-
-    <section class="row row-two">
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Log Maintenance</h3>
-                <span class="hint" id="logHint">--</span>
-            </div>
-            <form class="form" id="maintForm" autocomplete="off">
-                <label class="field">Technician<input id="mTech" required maxlength="40" placeholder="Name"></label>
-                <label class="field">Work done
-                    <select id="mAction">
-                        <option>Inspection, no fault found</option>
-                        <option>Bearing greased</option>
-                        <option>Bearing replaced</option>
-                        <option>Alignment corrected</option>
-                        <option>Mounting bolts tightened</option>
-                        <option>Impeller cleaned</option>
-                        <option>Other</option>
-                    </select>
-                </label>
-                <label class="field full">Notes<textarea id="mNotes" maxlength="500" placeholder="What was found, parts used"></textarea></label>
-                <label class="check full"><input type="checkbox" id="mService"> Counts as a service (resets the service hours)</label>
-                <div class="actions full"><button class="btn btn-primary" type="submit"><svg class="i"><use href="#i-check"/></svg>Save to log</button></div>
-            </form>
-        </div>
-
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Maintenance Log</h3>
-                <span class="hint">Selected pump</span>
-            </div>
-            <div class="items" id="maintRows"><div class="empty">Nothing logged yet</div></div>
-        </div>
-
-    </section>
-
-    <section class="row">
-        <div class="panel">
-            <div class="panel-head">
-                <h3>Alert History</h3>
-                <span class="hint">Selected pump · repeats of an open alert are counted, not sent again</span>
-            </div>
-            <div class="table-wrap">
-                <table>
-                    <thead><tr><th>#</th><th>Alert</th><th>Opened</th><th class="r">Repeats</th><th>SMS</th><th>Escalated</th><th>Acknowledged</th></tr></thead>
-                    <tbody id="histRows"></tbody>
-                </table>
-            </div>
-        </div>
-    </section>
-
+        </section>
     </div>
 
 </main>
 
-<footer class="footer">ResQFog · Edge–Fog–Cloud condition monitoring for water-supply pumping stations</footer>
+<footer class="footer">ResQFog · condition monitoring for water-supply pumping stations</footer>
+
+<dialog id="ackDialog">
+    <form method="dialog" id="ackForm">
+        <h3>I'm handling this alert</h3>
+        <p id="ackText">--</p>
+        <label class="field">Your name<input id="ackName" required maxlength="40"></label>
+        <label class="field" style="margin-top:12px">Note (optional)<input id="ackNote" maxlength="200" placeholder="For example: going to site"></label>
+        <div class="actions">
+            <button class="btn" value="cancel" formnovalidate>Cancel</button>
+            <button class="btn primary" value="ok">Confirm</button>
+        </div>
+    </form>
+</dialog>
 
 <div class="toast" id="toast"></div>
 
 <script>
 const WARNING = {{ warning }};
 const CRITICAL = {{ critical }};
-const TRIP_AFTER = {{ trip_after }};
 const WATCH = {{ watch }};
 const POOR = {{ poor }};
-const SCALE_MAX = Math.ceil(CRITICAL * 1.5);
+const VIB_MAX = CRITICAL * 1.5;
 
 const $ = id => document.getElementById(id);
+const COLOR = { good: "#22c55e", warn: "#f5b821", bad: "#f43f5e", idle: "#64748b" };
 
-const COLORS = {
-    NORMAL: "#22c55e",
-    WARNING: "#f5b821",
-    CRITICAL: "#f43f5e",
-    TRIPPED: "#f43f5e",
-    OFFLINE: "#64748b",
-    WAITING: "#64748b"
-};
-
-let selected = new URLSearchParams(location.search).get("m") || "";
-
-const HERO = {
-    NORMAL: {
-        icon: "i-check",
-        title: "Machine Operating Normally",
-        desc: "Vibration is within the normal operating range.",
-        action: "None required"
-    },
-    WARNING: {
-        icon: "i-alert",
-        title: "Elevated Vibration Detected",
-        desc: "Vibration above warning level. Monitor the machine closely.",
-        action: "Schedule inspection"
-    },
-    CRITICAL: {
-        icon: "i-octagon",
-        title: "Critical Machine Condition",
-        desc: "Severe vibration detected. Alert escalated — inspect immediately.",
-        action: "Stop & inspect"
-    },
-    TRIPPED: {
-        icon: "i-octagon",
-        title: "Motor Stopped by Edge Protection",
-        desc: `Critical vibration lasted ${TRIP_AFTER} readings, so the ESP32 cut motor power.`,
-        action: "Inspect, then restart"
-    },
-    OFFLINE: {
-        icon: "i-wifi-off",
-        title: "Edge Node Offline",
-        desc: "No telemetry received recently. Check ESP32 power and Wi-Fi.",
-        action: "Check edge node"
-    },
-    WAITING: {
-        icon: "i-activity",
-        title: "Waiting for Edge Node",
-        desc: "No telemetry received yet. Power on the ESP32 to begin monitoring.",
-        action: "Power on ESP32"
-    }
-};
-
-function buildScale() {
-    $("zoneN").style.width = (WARNING / SCALE_MAX * 100) + "%";
-    $("zoneW").style.width = ((CRITICAL - WARNING) / SCALE_MAX * 100) + "%";
-    $("zoneC").style.width = ((SCALE_MAX - CRITICAL) / SCALE_MAX * 100) + "%";
-
-    const labels = [0, WARNING, CRITICAL, SCALE_MAX];
-    $("scaleLabels").innerHTML = labels
-        .map(v => `<span style="left:${v / SCALE_MAX * 100}%">${v === 0 ? "0" : v.toFixed(2)} g</span>`)
-        .join("");
-}
-
-const thresholdLines = {
-    id: "thresholdLines",
-    afterDatasetsDraw(chart) {
-        const { ctx, chartArea, scales } = chart;
-        [[WARNING, COLORS.WARNING], [CRITICAL, COLORS.CRITICAL]].forEach(([value, color]) => {
-            const y = scales.y.getPixelForValue(value);
-            if (y < chartArea.top || y > chartArea.bottom) return;
-            ctx.save();
-            ctx.strokeStyle = color;
-            ctx.globalAlpha = 0.8;
-            ctx.setLineDash([6, 5]);
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(chartArea.left, y);
-            ctx.lineTo(chartArea.right, y);
-            ctx.stroke();
-            ctx.restore();
-        });
-    }
-};
-
-let chart;
-
-function initChart() {
-    const ctx = $("chart").getContext("2d");
-
-    const gradient = ctx.createLinearGradient(0, 0, 0, 330);
-    gradient.addColorStop(0, "rgba(59,130,246,.30)");
-    gradient.addColorStop(1, "rgba(59,130,246,0)");
-
-    chart = new Chart(ctx, {
-        type: "line",
-        data: {
-            labels: [],
-            datasets: [{
-                label: "Vibration",
-                data: [],
-                borderColor: "#3b82f6",
-                backgroundColor: gradient,
-                fill: true,
-                borderWidth: 2,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHoverRadius: 5,
-                segment: {
-                    borderColor: c => {
-                        const v = Math.max(c.p0.parsed.y, c.p1.parsed.y);
-                        if (v >= CRITICAL) return COLORS.CRITICAL;
-                        if (v >= WARNING) return COLORS.WARNING;
-                        return "#3b82f6";
-                    }
-                }
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            interaction: { mode: "index", intersect: false },
-            scales: {
-                x: {
-                    ticks: { color: "#64748b", maxTicksLimit: 8, maxRotation: 0 },
-                    grid: { color: "#142036" }
-                },
-                y: {
-                    beginAtZero: true,
-                    suggestedMax: CRITICAL * 1.4,
-                    ticks: { color: "#64748b", callback: v => v.toFixed(1) + " g" },
-                    grid: { color: "#142036" }
-                }
-            },
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    backgroundColor: "#111c31",
-                    borderColor: "#1c2a42",
-                    borderWidth: 1,
-                    titleColor: "#e6edf9",
-                    bodyColor: "#9aa8c0",
-                    displayColors: false,
-                    callbacks: { label: c => c.parsed.y.toFixed(2) + " g" }
-                }
-            }
-        },
-        plugins: [thresholdLines]
-    });
-}
-
-function setState(el, text, tone) {
-    el.innerHTML = "";
-    const dot = document.createElement("span");
-    dot.className = "dot" + (tone === "on" ? " on" : tone === "off" ? " off" : "");
-    el.append(dot, text);
-}
-
-function renderHero(state, vibration) {
-    const info = HERO[state] || HERO.WAITING;
-    const hero = $("hero");
-    hero.dataset.state = state;
-    hero.dataset.tone = state;
-    $("heroBadge").dataset.tone = state;
-    $("heroBadge").textContent = state;
-    $("heroIcon").querySelector("use").setAttribute("href", "#" + info.icon);
-    $("heroTitle").textContent = info.title;
-    $("heroDesc").textContent = info.desc;
-
-    const pct = Math.min(vibration, SCALE_MAX) / SCALE_MAX * 100;
-    $("scaleMarker").style.left = pct + "%";
-}
-
-function renderEvents(events) {
-    const box = $("events");
-    box.innerHTML = "";
-
-    if (!events.length) {
-        box.innerHTML = '<div class="empty">No events yet</div>';
-        return;
-    }
-
-    events.forEach(e => {
-        const row = document.createElement("div");
-        row.className = "event";
-
-        const dot = document.createElement("div");
-        dot.className = "event-dot " + e.level;
-
-        const main = document.createElement("div");
-        main.className = "event-main";
-
-        const title = document.createElement("div");
-        title.className = "event-title";
-        title.textContent = e.title;
-
-        const detail = document.createElement("div");
-        detail.className = "event-detail";
-        detail.textContent = e.detail;
-
-        const time = document.createElement("div");
-        time.className = "event-time num";
-        time.textContent = e.time;
-
-        main.append(title, detail);
-        row.append(dot, main, time);
-        box.append(row);
-    });
-}
-
-function renderFleet(fleet) {
-    const box = $("machines");
-    box.innerHTML = "";
-
-    const bad = fleet.filter(m => ["CRITICAL", "TRIPPED", "OFFLINE"].includes(m.state)).length;
-    $("fleetHint").textContent = `${fleet.length} monitored · ${bad ? bad + " need attention" : "all healthy"}`;
-
-    fleet.forEach(m => {
-        const b = document.createElement("button");
-        b.className = "machine" + (m.id === selected ? " selected" : "");
-        b.addEventListener("click", () => selectMachine(m.id));
-
-        const dot = document.createElement("span");
-        dot.className = "sdot";
-        dot.style.background = COLORS[m.state] || COLORS.OFFLINE;
-
-        const body = document.createElement("div");
-        body.className = "machine-body";
-        const title = document.createElement("div");
-        title.className = "machine-title";
-        title.textContent = m.id;
-        if (m.simulated) {
-            const tag = document.createElement("span");
-            tag.className = "sim-tag";
-            tag.textContent = "SIM";
-            title.append(tag);
-        }
-        const sub = document.createElement("div");
-        sub.className = "machine-sub";
-        sub.textContent = m.site + (m.health !== null ? ` · health ${m.health}%` : "") + " · ML " + m.ml.toLowerCase() + (m.link === "LoRa" ? " · LoRa" : "");
-        body.append(title, sub);
-
-        const val = document.createElement("div");
-        val.className = "machine-val num";
-        val.textContent = m.lastSeenAgo === null ? "--" : m.vibration.toFixed(2) + " g";
-        const st = document.createElement("small");
-        st.className = "tone-" + m.state;
-        st.textContent = m.state;
-        val.append(st);
-
-        b.append(dot, body, val);
-        box.append(b);
-    });
-}
-
-const ML_TONE = { NORMAL: "tone-NORMAL", ANOMALY: "tone-WARNING", CALIBRATING: "", "NOT CALIBRATED": "tone-WAITING", "MOTOR STOPPED": "tone-WAITING" };
-
-function renderMl(ml, m, live) {
-    let text = ml.state;
-    if (ml.state === "CALIBRATING") text = `Calibrating ${ml.progress}/${ml.needed}`;
-    $("fMl").textContent = live ? text : "--";
-    $("fMl").className = "fact-v " + (live ? ML_TONE[ml.state] || "" : "");
-    $("mlModel").textContent = ml.model ? ml.model : "not calibrated";
-    $("mlScore").textContent = ml.score === null ? "--" : `${ml.score.toFixed(3)} (limit ${ml.threshold.toFixed(3)})`;
-    $("mlScore").className = "v num" + (ml.score !== null && ml.score > ml.threshold ? " tone-WARNING" : "");
-    ["btnCalibrate", "btnCalQuick", "btnCalLong"].forEach(id => {
-        const btn = $(id);
-        btn.style.display = m.simulated ? "none" : "";
-        btn.disabled = ml.state === "CALIBRATING";
-    });
-}
-
-function selectMachine(id) {
-    if (id === selected) return;
-    selected = id;
-    faultSignature = "";
-    const url = new URL(location.href);
-    url.searchParams.set("m", id);
-    history.replaceState(null, "", url);
-    refresh();
-}
-
-function render(d) {
-    const c = d.current;
-    const online = d.edge.online;
-    const hasData = d.edge.lastSeenAgo !== null;
-    const m = d.machine;
-
-    selected = m.id;
-    const state = m.state;
-
-    renderFleet(d.fleet);
-
-    $("heroMachine").innerHTML = "";
-    const idEl = document.createElement("b");
-    idEl.textContent = m.id;
-    $("heroMachine").append(idEl, " · " + m.site);
-    $("btnRestart").style.display = state === "TRIPPED" ? "" : "none";
-    $("pEdgeSub").textContent = `${m.id} · ESP32 + MPU6050` + (m.simulated ? " (simulated)" : "");
-
-    renderMl(d.ml, m, hasData && online);
-
-    const hLoc = $("hLoc");
-    hLoc.innerHTML = "";
-    if (m.lat !== null) {
-        const a = document.createElement("a");
-        a.href = m.mapsLink;
-        a.target = "_blank";
-        a.rel = "noopener";
-        a.style.color = "inherit";
-        a.textContent = `${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}`;
-        hLoc.append(a, m.gpsFix ? ` · GPS (${m.satellites} sats)` : " · installed");
-    } else {
-        hLoc.textContent = "--";
-    }
-    $("hLink").textContent = m.link === "LoRa"
-        ? `LoRa · RSSI ${m.rssi} dBm · SNR ${m.snr} dB`
-        : (hasData ? "Wi-Fi" : "--");
-    $("hMotor").textContent = !hasData ? "--" : m.motor + (m.trips ? ` · ${m.trips} trip${m.trips > 1 ? "s" : ""}` : "");
-    $("hMotor").className = "v" + (m.motor === "TRIPPED" ? " tone-CRITICAL" : hasData ? " tone-NORMAL" : "");
-    $("hRecovered").textContent = `${m.recovered} readings`;
-
-    const mode = $("modePill");
-    mode.textContent = d.mode === "DEMO" ? "DEMO MODE" : "LIVE";
-    mode.className = "pill hide-sm " + (d.mode === "DEMO" ? "mode-demo" : "mode-live");
-    $("fogDot").className = "dot on";
-    $("fogText").textContent = "Fog connected";
-
-    renderHero(state, c.vibration);
-
-    $("fCur").textContent = hasData ? Number(c.vibration).toFixed(2) + " g" : "-- g";
-    $("fCur").className = "fact-v num" + (online ? " tone-" + c.status : "");
-    const headroom = CRITICAL - c.vibration;
-    if (state === "TRIPPED") $("fCur").className = "fact-v num";
-    $("fHead").textContent = hasData ? (headroom > 0 ? headroom.toFixed(2) + " g" : "Exceeded") : "-- g";
-    $("fHead").className = "fact-v num" + (hasData && headroom <= 0 ? " tone-CRITICAL" : "");
-    $("fFor").textContent = online ? c.statusFor : "--";
-    $("fAct").textContent = (HERO[state] || HERO.WAITING).action;
-    $("fAct").className = "fact-v" + (["WARNING", "CRITICAL", "TRIPPED"].includes(state) ? " tone-" + state : "");
-
-    if (state === "NORMAL" && d.ml.state === "ANOMALY") {
-        $("hero").dataset.state = "WARNING";
-        $("hero").dataset.tone = "WARNING";
-        $("heroBadge").dataset.tone = "WARNING";
-        $("heroBadge").textContent = "ML WARNING";
-        $("heroIcon").querySelector("use").setAttribute("href", "#i-alert");
-        $("heroTitle").textContent = "Early Warning from ML Model";
-        $("heroDesc").textContent = "Vibration level is still normal, but its pattern no longer matches normal running.";
-        $("fAct").textContent = "Plan an inspection";
-        $("fAct").className = "fact-v tone-WARNING";
-    }
-
-    setState($("pEdge"), !hasData ? "WAITING" : online ? "ONLINE" : "OFFLINE", online ? "on" : hasData ? "off" : "");
-    setState($("pFog"), "ONLINE", "on");
-    const smsTone = !d.alerts.enabled || d.alerts.status === "FAILED" ? "off" : "on";
-    setState($("pSms"), d.alerts.enabled ? d.alerts.status : "DISABLED", smsTone);
-    $("link1").classList.toggle("active", online);
-    $("link2").classList.toggle("active", online && (c.status === "CRITICAL" || state === "TRIPPED"));
-
-    const vib = $("kVib");
-    vib.textContent = Number(c.vibration).toFixed(2);
-    vib.className = "kpi-value num" + (online ? " tone-" + c.status : "");
-
-    $("kSpeed").textContent = c.motorSpeedPercent;
-    $("kSpeedBar").style.width = c.motorSpeedPercent + "%";
-    $("kPwm").textContent = `PWM ${Math.round(c.motorSpeed)} / 255`;
-
-    $("kAvg").textContent = d.stats.avg.toFixed(2);
-    $("kSamples").textContent = `${d.stats.samples.toLocaleString()} samples`;
-
-    $("kMax").textContent = d.stats.max.toFixed(2);
-    $("kMax").className = "kpi-value num" + (d.stats.max >= CRITICAL ? " tone-CRITICAL" : d.stats.max >= WARNING ? " tone-WARNING" : "");
-    $("kMaxTime").textContent = "Recorded at " + d.stats.maxTime;
-
-    $("kAlerts").textContent = d.stats.alerts;
-    $("kAlerts").className = "kpi-value num" + (d.stats.alerts ? " tone-CRITICAL" : "");
-    $("kSms").textContent = `${d.alerts.sent} SMS sent`;
-
-    chart.data.labels = d.history.map(p => p.t);
-    chart.data.datasets[0].data = d.history.map(p => p.v);
-    chart.update();
-
-    const hEdge = $("hEdge");
-    hEdge.textContent = !hasData ? "WAITING" : online ? "ONLINE" : "OFFLINE";
-    hEdge.className = "v" + (online ? " tone-NORMAL" : hasData ? " tone-CRITICAL" : "");
-    $("hLast").textContent = hasData ? `${c.timestamp} (${d.edge.lastSeenAgo.toFixed(1)}s ago)` : "--";
-    $("hRate").textContent = d.edge.rate.toFixed(1) + " msg/s";
-    $("hUptime").textContent = d.uptime;
-
-    const hSms = $("hSms");
-    let smsText = d.alerts.enabled ? `${d.alerts.status} · ${d.alerts.recipients} number${d.alerts.recipients === 1 ? "" : "s"}` : "DISABLED";
-    if (d.alerts.cooldownRemaining > 0) smsText += ` · cooldown ${d.alerts.cooldownRemaining}s`;
-    hSms.textContent = smsText;
-    hSms.className = "v" + (smsTone === "off" ? " tone-CRITICAL" : " tone-NORMAL");
-    $("hSmsLast").textContent = d.alerts.lastSent;
-
-    const st = d.statusTime;
-    $("dN").style.width = st.NORMAL + "%";
-    $("dW").style.width = st.WARNING + "%";
-    $("dC").style.width = st.CRITICAL + "%";
-    $("pN").textContent = st.NORMAL.toFixed(1) + "%";
-    $("pW").textContent = st.WARNING.toFixed(1) + "%";
-    $("pC").textContent = st.CRITICAL.toFixed(1) + "%";
-    $("kMin").textContent = d.stats.min.toFixed(2) + " g";
-
-    renderEvents(d.events);
-
-    renderFaults(d.faults);
-
-    const open = d.openAlertsTotal;
-    $("alertPill").dataset.n = open;
-    $("alertPillText").textContent = `${open} open alert${open === 1 ? "" : "s"}`;
-    $("tabAlertCount").dataset.n = open;
-    $("tabAlertCount").textContent = open || "";
-
-    const h = d.health;
-    $("fHealth").textContent = hasData && h.score !== null ? `${Math.round(h.score)} %` : "--";
-    $("fHealth").className = "fact-v num lvl-" + (h.score !== null ? h.level : "UNKNOWN");
-
-    if (tab === "health") renderHealth(d);
-    if (tab === "maintenance") renderMaintenance(d);
-    lastDetail = d;
-}
-
-// ------------------------------------------------------------------ tabs
-
-let tab = new URLSearchParams(location.search).get("tab") || "overview";
-let lastDetail = null;
-
-function showTab(name) {
-    tab = ["overview", "health", "map", "maintenance"].includes(name) ? name : "overview";
-    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
-    document.querySelectorAll(".tab").forEach(t => t.hidden = t.id !== "tab-" + tab);
-    const url = new URL(location.href);
-    url.searchParams.set("tab", tab);
-    history.replaceState(null, "", url);
-    if (tab === "map") { initMap(); refreshPumps(); }
-    if (tab === "maintenance") refreshOpenAlerts();
-    if (lastDetail) render(lastDetail);
-}
-
-document.querySelectorAll(".tab-btn").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
-$("alertPill").addEventListener("click", () => showTab("maintenance"));
-
-function fmtDuration(seconds) {
-    if (seconds === null || seconds === undefined) return "--";
-    if (seconds < 90) return `${Math.round(seconds)} s`;
-    if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
-    if (seconds < 172800) return `${(seconds / 3600).toFixed(1)} h`;
-    return `${(seconds / 86400).toFixed(1)} days`;
-}
+const params = new URLSearchParams(location.search);
+let selected = params.get("m") || "";
+let tab = params.get("tab") || "pumps";
+let showTech = params.get("tech") === "1";
+let last = null;
 
 function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -1542,440 +492,26 @@ function el(tag, cls, text) {
     return e;
 }
 
+function ago(seconds) {
+    if (seconds === null || seconds === undefined) return "";
+    if (seconds < 60) return "just now";
+    if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
+    if (seconds < 86400) return `${Math.round(seconds / 3600)} h ago`;
+    return `${Math.round(seconds / 86400)} days ago`;
+}
+
+function duration(seconds) {
+    if (seconds < 90) return `${Math.round(seconds)} seconds`;
+    if (seconds < 5400) return `${Math.round(seconds / 60)} minutes`;
+    if (seconds < 172800) return `${Math.round(seconds / 3600)} hours`;
+    return `${Math.round(seconds / 86400)} days`;
+}
+
 async function post(url, body) {
-    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
     let data = {};
     try { data = await res.json(); } catch (e) {}
     return { ok: res.ok, data };
-}
-
-// ------------------------------------------------------------------ health tab
-
-let healthChart, specChart;
-
-const levelLines = {
-    id: "levelLines",
-    afterDatasetsDraw(chart) {
-        const { ctx, chartArea, scales } = chart;
-        [[WATCH, COLORS.WARNING], [POOR, COLORS.CRITICAL]].forEach(([value, color]) => {
-            const y = scales.y.getPixelForValue(value);
-            ctx.save();
-            ctx.strokeStyle = color; ctx.globalAlpha = 0.8; ctx.setLineDash([6, 5]); ctx.lineWidth = 1.5;
-            ctx.beginPath(); ctx.moveTo(chartArea.left, y); ctx.lineTo(chartArea.right, y); ctx.stroke();
-            ctx.restore();
-        });
-    }
-};
-
-function initHealthCharts() {
-    if (healthChart) return;
-    const grid = { color: "#142036" }, ticks = { color: "#64748b" };
-    healthChart = new Chart($("healthChart"), {
-        type: "line",
-        data: { labels: [], datasets: [
-            { label: "Health %", data: [], borderColor: "#22c55e", borderWidth: 2, pointRadius: 0, tension: 0.25, yAxisID: "y", spanGaps: true },
-            { label: "Avg vibration (g)", data: [], borderColor: "rgba(59,130,246,.55)", borderWidth: 1.5, pointRadius: 0, tension: 0.25, yAxisID: "y2", spanGaps: true }
-        ] },
-        options: {
-            responsive: true, maintainAspectRatio: false, animation: false,
-            interaction: { mode: "index", intersect: false },
-            scales: {
-                x: { ticks: { ...ticks, maxTicksLimit: 8, maxRotation: 0 }, grid },
-                y: { min: 0, max: 100, ticks: { ...ticks, callback: v => v + " %" }, grid },
-                y2: { position: "right", beginAtZero: true, suggestedMax: CRITICAL, ticks: { ...ticks, callback: v => v.toFixed(1) + " g" }, grid: { display: false } }
-            },
-            plugins: { legend: { labels: { color: "#9aa8c0", boxWidth: 14 } } }
-        },
-        plugins: [levelLines]
-    });
-    specChart = new Chart($("specChart"), {
-        type: "bar",
-        data: { labels: [], datasets: [
-            { label: "Normal running (calibration)", data: [], backgroundColor: "rgba(100,116,139,.55)" },
-            { label: "Latest window", data: [], backgroundColor: [] }
-        ] },
-        options: {
-            responsive: true, maintainAspectRatio: false, animation: false,
-            scales: {
-                x: { ticks: { color: "#64748b" }, grid: { display: false } },
-                y: { title: { display: true, text: "log10 band energy", color: "#64748b" }, ticks: { color: "#64748b" }, grid: { color: "#142036" } }
-            },
-            plugins: { legend: { labels: { color: "#9aa8c0", boxWidth: 14 } } }
-        }
-    });
-}
-
-function renderHealth(d) {
-    initHealthCharts();
-    const h = d.health, m = d.machine;
-    const has = h.score !== null;
-    $("hScore").textContent = has ? Math.round(h.score) : "--";
-    $("hScore").className = "val num lvl-" + (has ? h.level : "UNKNOWN");
-    $("hLevel").textContent = has ? h.level : "NO DATA";
-    $("hLevel").dataset.tone = { GOOD: "NORMAL", WATCH: "WARNING", POOR: "CRITICAL" }[h.level] || "WAITING";
-    $("hMarker").style.left = (has ? h.score : 0) + "%";
-    $("hInterval").textContent = `1 point every ${fmtDuration(h.interval)} · trend over ${fmtDuration(h.trendWindow)}`;
-    let trend = "--";
-    if (h.perDay !== null) {
-        const fast = Math.abs(h.perDay) >= 48;
-        const v = fast ? h.perDay / 24 : h.perDay;
-        trend = `${v > 0 ? "+" : ""}${v.toFixed(1)} % per ${fast ? "hour" : "day"}`;
-    }
-    $("hTrend").textContent = trend;
-    $("hTrend").className = "v num" + (h.perDay !== null && h.perDay < -1 ? " tone-WARNING" : "");
-    let eta = "--";
-    if (h.etaPoor !== null) eta = h.etaPoor === 0 ? "already poor" : "about " + fmtDuration(h.etaPoor);
-    else if (has) eta = h.perDay !== null && h.perDay < 0 ? "no steady trend yet" : "not falling";
-    $("hEta").textContent = eta;
-    $("hEta").className = "v num" + (h.etaPoor !== null ? " tone-WARNING" : "");
-    $("hBaseline").textContent = d.ml.model ? d.ml.model : "not calibrated: press Calibrate";
-    let mlText = d.ml.state;
-    if (d.ml.state === "CALIBRATING") mlText = `Calibrating ${d.ml.progress}/${d.ml.needed}` + (d.ml.long ? " (1 hour)" : "");
-    $("hMl").textContent = mlText;
-    $("hMl").className = "v " + (ML_TONE[d.ml.state] || "");
-
-    healthChart.data.labels = h.points.map(p => p.t);
-    healthChart.data.datasets[0].data = h.points.map(p => p.h);
-    healthChart.data.datasets[1].data = h.points.map(p => p.v);
-    healthChart.update();
-
-    const sp = d.spectrum;
-    specChart.data.labels = sp.labels;
-    if (sp.current) {
-        specChart.data.datasets[0].data = sp.baseline;
-        specChart.data.datasets[1].data = sp.current;
-        specChart.data.datasets[1].backgroundColor = sp.current.map((_, i) => sp.flagged.includes(i) ? "#f43f5e" : "#3b82f6");
-        $("specNote").textContent = sp.flagged.length
-            ? `Bands away from normal: ${sp.flagged.map(i => sp.labels[i]).join(", ")}. Low bands follow shaft speed, imbalance and looseness; higher bands follow bearing and impeller faults.`
-            : "All bands are within the normal spread of this pump.";
-    } else {
-        specChart.data.datasets[0].data = [];
-        specChart.data.datasets[1].data = [];
-        $("specNote").textContent = m.simulated ? "Waiting for a vibration window." : "Calibrate the pump to compare its spectrum with normal running.";
-    }
-    specChart.update();
-}
-
-async function calibrate(mode) {
-    const text = mode === "long"
-        ? `Long calibration of ${selected}: one window every 30 s for about an hour. Let the pump run normally over its usual speeds.`
-        : `Calibrate ${selected}? Run the pump normally for about 2 minutes, changing the speed a little.`;
-    if (!confirm(text)) return;
-    const { ok } = await post("/api/calibrate", { machine: selected, mode });
-    toast(ok ? "Calibration started" : "Calibration not started");
-    refresh();
-}
-
-$("btnCalQuick").addEventListener("click", () => calibrate("quick"));
-$("btnCalLong").addEventListener("click", () => calibrate("long"));
-
-// ------------------------------------------------------------------ map tab
-
-let map, markers = {}, pickMarker = null, pumps = [];
-
-function initMap() {
-    if (map) { setTimeout(() => map.invalidateSize(), 50); return; }
-    map = L.map("map", { zoomControl: true }).setView([12.9692, 79.1559], 13);
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: "&copy; OpenStreetMap contributors"
-    }).addTo(map);
-    map.on("click", e => {
-        $("pLat").value = e.latlng.lat.toFixed(5);
-        $("pLon").value = e.latlng.lng.toFixed(5);
-        showPick();
-    });
-    setTimeout(() => map.invalidateSize(), 50);
-}
-
-function showPick() {
-    const lat = parseFloat($("pLat").value), lon = parseFloat($("pLon").value);
-    if (!map || isNaN(lat) || isNaN(lon)) return;
-    if (!pickMarker) pickMarker = L.circleMarker([lat, lon], { radius: 6, color: "#fff", weight: 2, fillColor: "#3b82f6", fillOpacity: 1 }).addTo(map);
-    pickMarker.setLatLng([lat, lon]);
-}
-
-let mapFitted = false;
-
-function renderMap() {
-    if (!map) return;
-    const seen = new Set();
-    const bounds = [];
-    pumps.forEach(p => {
-        if (p.lat === null || p.lon === null) return;
-        seen.add(p.id);
-        bounds.push([p.lat, p.lon]);
-        const color = COLORS[p.state] || COLORS.OFFLINE;
-        let mk = markers[p.id];
-        if (!mk) {
-            mk = markers[p.id] = L.circleMarker([p.lat, p.lon], { radius: 10, weight: 2, color: "#0d1526", fillOpacity: .95 }).addTo(map);
-            mk.on("click", () => { selectMachine(p.id); fillForm(pumps.find(x => x.id === p.id)); });
-        }
-        mk.setLatLng([p.lat, p.lon]);
-        mk.setStyle({ fillColor: color });
-        mk.bindTooltip(`${p.id} · ${p.site}<br>${p.state} · ${p.vibration.toFixed(2)} g` +
-            (p.health !== null ? ` · health ${p.health}%` : "") + (p.openAlerts ? `<br>${p.openAlerts} open alert(s)` : ""));
-    });
-    Object.keys(markers).forEach(id => { if (!seen.has(id)) { map.removeLayer(markers[id]); delete markers[id]; } });
-    if (!mapFitted && bounds.length) {
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
-        mapFitted = true;
-    }
-}
-
-function renderRegistry() {
-    const body = $("regRows");
-    body.innerHTML = "";
-    const located = pumps.filter(p => p.lat !== null).length;
-    $("regHint").textContent = `${pumps.length} pumps · ${located} with a location`;
-    pumps.forEach(p => {
-        const tr = document.createElement("tr");
-        const id = el("td", "", p.id);
-        if (p.simulated) id.append(el("span", "sim-tag", "SIM"));
-        tr.append(id, el("td", "", p.site), el("td", "tone-" + p.state, p.state),
-            el("td", "r num lvl-" + p.healthLevel, p.health === null ? "--" : p.health + " %"),
-            el("td", "r num", p.hours.run.toFixed(1)),
-            el("td", "r num" + (p.hours.dueIn < 0 ? " tone-CRITICAL" : ""), p.hours.dueIn < 0 ? "overdue" : p.hours.dueIn.toFixed(0) + " h"),
-            el("td", "r num" + (p.openAlerts ? " tone-CRITICAL" : ""), p.openAlerts),
-            el("td", "num", p.lat === null ? "not set" : `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`));
-        const td = el("td", "r");
-        const b = el("button", "btn", "Edit");
-        b.addEventListener("click", () => { selectMachine(p.id); fillForm(p); });
-        td.append(b);
-        tr.append(td);
-        body.append(tr);
-    });
-}
-
-function fillForm(p) {
-    if (!p) return;
-    $("formTitle").textContent = "Pump details · " + p.id;
-    $("pId").value = p.id;
-    $("pId").readOnly = true;
-    $("pSite").value = p.site || "";
-    $("pLat").value = p.lat ?? "";
-    $("pLon").value = p.lon ?? "";
-    $("pKw").value = p.motorKw ?? "";
-    $("pInstalled").value = p.installed || "";
-    $("pNotes").value = p.notes || "";
-    showPick();
-}
-
-$("btnNewPump").addEventListener("click", () => {
-    $("pumpForm").reset();
-    $("pId").readOnly = false;
-    $("formTitle").textContent = "Add pump";
-    $("pId").focus();
-});
-
-$("pLat").addEventListener("change", showPick);
-$("pLon").addEventListener("change", showPick);
-
-$("pumpForm").addEventListener("submit", async e => {
-    e.preventDefault();
-    const { ok, data } = await post("/api/pumps", {
-        id: $("pId").value, site: $("pSite").value, lat: $("pLat").value, lon: $("pLon").value,
-        motorKw: $("pKw").value, installed: $("pInstalled").value, notes: $("pNotes").value
-    });
-    toast(ok ? "Pump saved" : "Not saved: " + (data.error || "error"));
-    if (ok) { $("pId").readOnly = true; mapFitted = false; refreshPumps(); refresh(); }
-});
-
-async function refreshPumps() {
-    try {
-        const res = await fetch("/api/pumps", { cache: "no-store" });
-        pumps = (await res.json()).pumps;
-        renderRegistry();
-        renderMap();
-        // follow the selected pump unless a new pump is being typed in
-        if (!$("pId").value || ($("pId").readOnly && $("pId").value !== selected)) fillForm(pumps.find(p => p.id === selected));
-    } catch (e) {}
-}
-
-// ------------------------------------------------------------------ maintenance tab
-
-function technicianName() {
-    let name = "";
-    try { name = localStorage.getItem("resqfogName") || ""; } catch (e) {}
-    name = prompt("Acknowledge as (your name):", name);
-    if (name) { try { localStorage.setItem("resqfogName", name); } catch (e) {} }
-    return name;
-}
-
-async function acknowledge(id) {
-    const by = technicianName();
-    if (!by) return;
-    const note = prompt("Note (optional), for example: going to site") || "";
-    const { ok, data } = await post(`/api/alerts/${id}/ack`, { by, note });
-    toast(ok ? `Alert #${id} acknowledged` : "Not acknowledged: " + (data.error || "error"));
-    refreshOpenAlerts();
-    refresh();
-}
-
-async function refreshOpenAlerts() {
-    let alerts = [];
-    try {
-        const res = await fetch("/api/alerts?open=1", { cache: "no-store" });
-        alerts = (await res.json()).alerts;
-    } catch (e) { return; }
-    const box = $("openAlerts");
-    box.innerHTML = "";
-    if (!alerts.length) { box.innerHTML = '<div class="empty">No open alerts</div>'; return; }
-    alerts.forEach(a => {
-        const item = el("div", "item open");
-        const main = el("div", "item-main");
-        const title = el("div", "item-title", `#${a.id} · ${a.pump} · ${a.title}`);
-        if (a.count > 1) title.append(el("span", "tagx", `x${a.count}`));
-        if (a.escalated) title.append(el("span", "tagx red", "ESCALATED"));
-        main.append(title, el("div", "item-sub", `${a.detail} · opened ${a.time} · open ${fmtDuration(a.openFor)} · SMS ${a.sms}`));
-        const b = el("button", "btn btn-primary", "Acknowledge");
-        b.addEventListener("click", () => acknowledge(a.id));
-        item.append(main, b);
-        box.append(item);
-    });
-}
-
-function renderMaintenance(d) {
-    const m = d.machine, hrs = d.hours;
-    $("escHint").textContent = d.alerts.enabled
-        ? `Unacknowledged after ${fmtDuration(d.alerts.escalateAfter)} → SMS to ${d.alerts.escalateTo} supervisor number(s)`
-        : `Escalation after ${fmtDuration(d.alerts.escalateAfter)} (SMS not configured)`;
-    $("hoursHint").textContent = m.id;
-    $("logHint").textContent = m.id + " · " + m.site;
-    $("rTotal").textContent = hrs.run.toFixed(1) + " h";
-    $("rSince").textContent = hrs.sinceService.toFixed(1) + " h";
-    $("rEvery").textContent = hrs.serviceEvery + " h";
-    $("rBar").style.width = Math.min(100, hrs.sinceService / hrs.serviceEvery * 100) + "%";
-    $("rDue").textContent = hrs.dueIn < 0 ? "Service overdue" : `Next service in ${hrs.dueIn.toFixed(0)} running hours`;
-    $("btnReport").href = "/report/" + encodeURIComponent(m.id);
-    $("btnHistory").href = "/report/" + encodeURIComponent(m.id) + ".csv";
-
-    const log = $("maintRows");
-    log.innerHTML = "";
-    if (!d.maintenance.length) log.innerHTML = '<div class="empty">Nothing logged yet</div>';
-    d.maintenance.forEach(r => {
-        const item = el("div", "item");
-        const main = el("div", "item-main");
-        const title = el("div", "item-title", r.action);
-        if (r.service) title.append(el("span", "tagx green", "SERVICE"));
-        main.append(title, el("div", "item-sub", `${r.time} · ${r.technician} · at ${r.runHours} h` + (r.notes ? ` · ${r.notes}` : "")));
-        item.append(main);
-        log.append(item);
-    });
-
-    const body = $("histRows");
-    body.innerHTML = "";
-    if (!d.alertHistory.length) body.innerHTML = '<tr><td colspan="7" class="empty">No alerts for this pump</td></tr>';
-    d.alertHistory.forEach(a => {
-        const tr = document.createElement("tr");
-        tr.append(el("td", "num", a.id), el("td", "", a.title), el("td", "num", a.time), el("td", "r num", a.count),
-            el("td", "", a.sms), el("td", "num" + (a.escalated ? " tone-CRITICAL" : ""), a.escalated || "--"));
-        const ack = el("td", "wrap" + (a.ackBy ? "" : " tone-WARNING"), a.ackBy ? `${a.ackBy}, ${a.ackTime}` + (a.ackNote ? ` (${a.ackNote})` : "") : "open");
-        tr.append(ack);
-        body.append(tr);
-    });
-}
-
-$("maintForm").addEventListener("submit", async e => {
-    e.preventDefault();
-    const service = $("mService").checked;
-    const { ok, data } = await post("/api/maintenance", {
-        machine: selected, technician: $("mTech").value, action: $("mAction").value,
-        notes: $("mNotes").value, service
-    });
-    toast(ok ? "Saved to the maintenance log" : "Not saved: " + (data.error || "error"));
-    if (ok) { $("mNotes").value = ""; $("mService").checked = false; refresh(); }
-});
-
-let faultSignature = "";
-
-function fmtG(v) {
-    return v === null || v === undefined ? "--" : Number(v).toFixed(2) + " g";
-}
-
-function renderFaults(f) {
-    $("faultHint").textContent =
-        `${f.preSamples} samples before + ${f.postSamples} after each critical event · CSV`;
-
-    const banner = $("recBanner");
-    if (f.recording) {
-        const r = f.recording;
-        banner.classList.add("show");
-        $("recText").textContent =
-            `Recording fault from ${r.time} — ${r.pre} samples before captured, ` +
-            `collecting after: ${r.post} / ${f.postSamples}`;
-        $("recBar").style.width = (r.post / f.postSamples * 100) + "%";
-    } else {
-        banner.classList.remove("show");
-    }
-
-    const signature = JSON.stringify(f.saved);
-    if (signature === faultSignature) return;
-    faultSignature = signature;
-
-    const body = $("faultRows");
-    body.innerHTML = "";
-
-    if (!f.saved.length) {
-        body.innerHTML =
-            '<tr><td colspan="7" class="empty">No faults recorded yet. ' +
-            'A recording starts automatically when vibration reaches CRITICAL.</td></tr>';
-        return;
-    }
-
-    f.saved.forEach(rec => {
-        const tr = document.createElement("tr");
-
-        const cells = [
-            [rec.time, ""],
-            [fmtG(rec.faultValue), "r tone-CRITICAL"],
-            [fmtG(rec.peak), "r"],
-            [fmtG(rec.preAvg), "r"],
-            [fmtG(rec.postAvg), "r"],
-            [`${rec.pre} / ${rec.post}`, "r"]
-        ];
-
-        cells.forEach(([text, cls], i) => {
-            const td = document.createElement("td");
-            td.className = "num " + cls;
-            td.textContent = text;
-            if (i === 0 && rec.partial) {
-                const tag = document.createElement("span");
-                tag.className = "tag";
-                tag.textContent = "PARTIAL";
-                tag.title = "Edge node went offline before all post-fault samples arrived";
-                td.append(tag);
-            }
-            tr.append(td);
-        });
-
-        const td = document.createElement("td");
-        td.className = "r";
-        const a = document.createElement("a");
-        a.className = "btn";
-        a.href = "/faults/" + encodeURIComponent(rec.file);
-        a.setAttribute("download", rec.file);
-        a.innerHTML = '<svg class="i"><use href="#i-download"/></svg>CSV';
-        td.append(a);
-        tr.append(td);
-
-        body.append(tr);
-    });
-}
-
-async function refresh() {
-    try {
-        const res = await fetch("/api/status?machine=" + encodeURIComponent(selected), { cache: "no-store" });
-        if (!res.ok) throw new Error(res.status);
-        render(await res.json());
-    } catch (err) {
-        $("fogDot").className = "dot off";
-        $("fogText").textContent = "Fog unreachable";
-    }
-}
-
-function tickClock() {
-    $("clock").textContent = new Date().toLocaleTimeString([], { hour12: false });
 }
 
 function toast(msg) {
@@ -1986,55 +522,636 @@ function toast(msg) {
     t._timer = setTimeout(() => t.classList.remove("show"), 3000);
 }
 
-$("btnReset").addEventListener("click", async () => {
-    if (!confirm(`Reset session statistics and graph for ${selected}?`)) return;
-    await fetch("/api/reset", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ machine: selected })
+// ------------------------------------------------------------ plain-language status
+
+const ALERT_TEXT = {
+    critical: "Vibration too high",
+    tripped: "Motor stopped for safety",
+    ml: "Unusual vibration pattern",
+    health: "Condition poor, maintenance needed",
+};
+
+function plainStatus(p) {
+    // p: summary of one pump from /api/status or /api/pumps
+    switch (p.state) {
+        case "WAITING": return { tone: "idle", icon: "i-activity", title: "Waiting for the sensor", todo: "Switch on the sensor at the pump." };
+        case "OFFLINE": return { tone: "idle", icon: "i-wifi-off", title: "No signal from the sensor", todo: "Check the power and Wi-Fi of the sensor at the pump." };
+        case "TRIPPED": return { tone: "bad", icon: "i-stop", title: "Stopped for safety", todo: "Inspect the pump. When it is safe, press Restart motor." };
+        case "CRITICAL": return { tone: "bad", icon: "i-stop", title: "Vibration too high", todo: "Inspect the pump now. It stops by itself if this continues." };
+        case "WARNING": return { tone: "warn", icon: "i-alert", title: "Vibration high", todo: "Keep an eye on it and plan an inspection." };
+    }
+    if (p.healthLevel === "POOR") return { tone: "bad", icon: "i-tool", title: "Needs maintenance", todo: "Its condition is poor. Arrange maintenance soon." };
+    if (p.ml === "ANOMALY") return { tone: "warn", icon: "i-alert", title: "Unusual vibration pattern", todo: "Vibration is still low but has changed. Plan an inspection soon." };
+    if (p.healthLevel === "WATCH") return { tone: "warn", icon: "i-tool", title: "Wearing out", todo: "Plan maintenance in the coming days." };
+    if (p.speed < 10) return { tone: "good", icon: "i-check", title: "Motor off", todo: "Nothing to do." };
+    return { tone: "good", icon: "i-check", title: "Running normally", todo: "Nothing to do." };
+}
+
+function conditionWord(score) {
+    // the word follows the number shown next to it
+    if (score === null || score === undefined) return ["Not set up yet", "t-idle", COLOR.idle];
+    if (score < POOR) return ["Needs maintenance", "t-bad", COLOR.bad];
+    if (score < WATCH) return ["Wearing out", "t-warn", COLOR.warn];
+    return ["Good", "t-good", COLOR.good];
+}
+
+// ------------------------------------------------------------ pump cards
+
+function renderCards(fleet) {
+    const box = $("pumpCards");
+    box.innerHTML = "";
+    fleet.forEach(p => {
+        const s = plainStatus(p);
+        const b = el("button", `pump ${s.tone}` + (p.id === selected ? " selected" : ""));
+        b.addEventListener("click", () => selectPump(p.id));
+        const top = el("div", "pump-top");
+        const name = el("span", "pump-name", p.id);
+        if (p.simulated) name.append(el("span", "sim", "SIM"));
+        top.append(name, el("span", "num t-" + s.tone, p.lastSeenAgo === null ? "" : p.vibration.toFixed(2) + " g"));
+        const cond = p.health === null ? "" : ` · condition ${p.health}%`;
+        b.append(top, el("div", "pump-site", p.site + cond), el("div", "pump-status t-" + s.tone, s.title));
+        box.append(b);
     });
-    toast("Session statistics reset");
+}
+
+function selectPump(id) {
+    if (id === selected) return;
+    selected = id;
+    faultSig = "";
+    setUrl();
+    refresh();
+}
+
+function setUrl() {
+    const url = new URL(location.href);
+    if (selected) url.searchParams.set("m", selected);
+    url.searchParams.set("tab", tab);
+    if (showTech) url.searchParams.set("tech", "1"); else url.searchParams.delete("tech");
+    history.replaceState(null, "", url);
+}
+
+// ------------------------------------------------------------ pumps tab
+
+function renderPump(d) {
+    const m = d.machine, c = d.current, h = d.health;
+    const hasData = d.edge.lastSeenAgo !== null;
+    const s = plainStatus(m);
+
+    $("statusCard").className = "panel status " + s.tone;
+    $("statusIcon").querySelector("use").setAttribute("href", "#" + s.icon);
+    $("statusPump").innerHTML = "";
+    $("statusPump").append(el("b", "", m.id), " · " + m.site);
+    $("statusTitle").textContent = s.title;
+    $("statusTodo").textContent = s.todo;
+    $("btnRestart").hidden = m.state !== "TRIPPED";
+    const open = d.openAlerts.length;
+    $("btnGoAlerts").hidden = open === 0;
+    $("btnGoAlertsText").textContent = open === 1 ? "1 alert waiting" : `${open} alerts waiting`;
+
+    // vibration
+    $("vibValue").innerHTML = "";
+    $("vibValue").append(hasData ? Number(c.vibration).toFixed(2) : "--", el("small", "", "g"));
+    const vt = c.status === "CRITICAL" ? ["Too high", "bad"] : c.status === "WARNING" ? ["High", "warn"] : ["Normal", "good"];
+    $("vibWord").textContent = hasData ? vt[0] : "--";
+    $("vibWord").className = "tile-word t-" + (hasData ? vt[1] : "idle");
+    $("vibBar").style.width = (hasData ? Math.min(c.vibration, VIB_MAX) / VIB_MAX * 100 : 0) + "%";
+    $("vibBar").style.background = COLOR[vt[1]];
+
+    // condition
+    const [word, wcls, wcolor] = conditionWord(h.score);
+    $("condValue").textContent = h.score === null ? "--" : Math.round(h.score) + " %";
+    $("condValue").className = "tile-value num " + wcls;
+    $("condWord").textContent = word;
+    $("condWord").className = "tile-word " + wcls;
+    $("condBar").style.width = (h.score ?? 0) + "%";
+    $("condBar").style.background = wcolor;
+    let note = "Calibrate the pump under Technical details to start.";
+    if (h.score !== null) {
+        if (h.etaPoor === 0) note = "Maintenance needed now.";
+        else if (h.etaPoor) note = `Getting worse. At this rate it needs maintenance in about ${duration(h.etaPoor)}.`;
+        else if (h.perDay !== null && h.perDay < -1) note = "Slowly getting worse.";
+        else note = "Stable.";
+    } else if (m.simulated || d.ml.model) note = "Collecting the first readings…";
+    $("condNote").textContent = note;
+
+    // motor and service
+    const hrs = d.hours;
+    if (!hasData) {
+        $("motorValue").textContent = "--"; $("motorValue").className = "tile-value"; $("motorNote").textContent = "--";
+    } else if (m.motor === "TRIPPED") {
+        $("motorValue").textContent = "Stopped for safety"; $("motorValue").className = "tile-value t-bad";
+        $("motorNote").textContent = `Stopped ${m.trips} time${m.trips === 1 ? "" : "s"} so far`;
+    } else if (c.motorSpeedPercent < 10) {
+        $("motorValue").textContent = "Off"; $("motorValue").className = "tile-value t-idle"; $("motorNote").textContent = "Speed knob at zero";
+    } else {
+        $("motorValue").textContent = "Running"; $("motorValue").className = "tile-value t-good"; $("motorNote").textContent = `${c.motorSpeedPercent} % speed`;
+    }
+    $("serviceNote").textContent = hrs.dueIn < 0
+        ? `Service overdue (${hrs.run.toFixed(0)} running hours)`
+        : `${hrs.run.toFixed(1)} running hours · next service in ${Math.round(hrs.dueIn)} h`;
+
+    // chart
+    vibChart.data.labels = d.history.map(p => p.t);
+    vibChart.data.datasets[0].data = d.history.map(p => p.v);
+    vibChart.update();
+
+    // activity
+    const box = $("activity");
+    box.innerHTML = "";
+    const events = plainEvents(d.events);
+    if (!events.length) box.innerHTML = '<div class="empty">Nothing yet</div>';
+    events.slice(0, 6).forEach(e => {
+        const row = el("div", "row");
+        const main = el("div", "row-main");
+        main.append(el("div", "row-title", e.title));
+        if (e.detail) main.append(el("div", "row-sub", e.detail));
+        row.append(el("span", "event-dot " + e.level), main, el("span", "time num", e.time));
+        box.append(row);
+    });
+
+    if (showTech) renderTech(d);
+}
+
+// The event log is written for engineers; this keeps what an operator needs, in plain words.
+const EVENT_TEXT = {
+    "ML anomaly detected": ["Unusual vibration pattern", ""],
+    "Motor tripped by edge protection": ["Motor stopped for safety", ""],
+    "Critical vibration": ["Vibration too high", null],
+    "Elevated vibration": ["Vibration high", null],
+    "Returned to normal": ["Vibration back to normal", null],
+    "Motor restarted": ["Motor restarted", ""],
+    "Edge node offline": ["Sensor stopped sending", "Check power and Wi-Fi at the pump"],
+    "Edge node connected": ["Sensor connected", ""],
+    "Pump health falling": ["Condition falling", null],
+    "Pump health poor": ["Condition poor, maintenance needed", null],
+    "Pump health improved": ["Condition improved", null],
+    "Maintenance logged": ["Work recorded", null],
+    "SMS alert sent": ["SMS sent", null],
+    "SMS failed": ["SMS could not be sent", null],
+    "Restart requested": ["Restart sent to the pump", ""],
+};
+
+function plainEvents(events) {
+    const out = [];
+    events.forEach(e => {
+        let title = e.title, detail = e.detail;
+        if (/^Alert #\d+ acknowledged/.test(title)) { title = "Alert taken care of"; }
+        else if (title in EVENT_TEXT) {
+            const [t, dtl] = EVENT_TEXT[title];
+            title = t;
+            if (dtl !== null) detail = dtl;
+        } else return;              // technical events stay in the engineer view
+        // the pattern check can switch back and forth; show each change once
+        if (out.length && out[out.length - 1].title === title) return;
+        out.push({ ...e, title, detail: (detail || "").replace(/^Health /, "Condition ") });
+    });
+    return out;
+}
+
+// ------------------------------------------------------------ technical details
+
+let vibChart, healthChart, specChart;
+
+function limitLines(lines) {
+    return {
+        id: "limits",
+        afterDatasetsDraw(chart) {
+            const { ctx, chartArea, scales } = chart;
+            lines.forEach(([value, color]) => {
+                const y = scales.y.getPixelForValue(value);
+                if (y < chartArea.top || y > chartArea.bottom) return;
+                ctx.save();
+                ctx.strokeStyle = color; ctx.globalAlpha = .85; ctx.setLineDash([6, 5]); ctx.lineWidth = 1.5;
+                ctx.beginPath(); ctx.moveTo(chartArea.left, y); ctx.lineTo(chartArea.right, y); ctx.stroke();
+                ctx.restore();
+            });
+        }
+    };
+}
+
+const grid = { color: "#142036" }, ticks = { color: "#6b7a92" };
+
+function initCharts() {
+    vibChart = new Chart($("vibChart"), {
+        type: "line",
+        data: { labels: [], datasets: [{ data: [], borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,.15)", fill: true, borderWidth: 2, tension: .3, pointRadius: 0,
+            segment: { borderColor: c => { const v = Math.max(c.p0.parsed.y, c.p1.parsed.y); return v >= CRITICAL ? COLOR.bad : v >= WARNING ? COLOR.warn : "#3b82f6"; } } }] },
+        options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            interaction: { mode: "index", intersect: false },
+            scales: { x: { ticks: { ...ticks, maxTicksLimit: 6, maxRotation: 0 }, grid }, y: { beginAtZero: true, suggestedMax: CRITICAL * 1.3, ticks: { ...ticks, callback: v => v.toFixed(1) + " g" }, grid } },
+            plugins: { legend: { display: false }, tooltip: { displayColors: false, callbacks: { label: c => c.parsed.y.toFixed(2) + " g" } } }
+        },
+        plugins: [limitLines([[WARNING, COLOR.warn], [CRITICAL, COLOR.bad]])]
+    });
+}
+
+function initTechCharts() {
+    if (healthChart) return;
+    healthChart = new Chart($("healthChart"), {
+        type: "line",
+        data: { labels: [], datasets: [{ label: "Condition %", data: [], borderColor: "#22c55e", borderWidth: 2, pointRadius: 0, tension: .25, spanGaps: true }] },
+        options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            scales: { x: { ticks: { ...ticks, maxTicksLimit: 6, maxRotation: 0 }, grid }, y: { min: 0, max: 100, ticks: { ...ticks, callback: v => v + " %" }, grid } },
+            plugins: { legend: { display: false } }
+        },
+        plugins: [limitLines([[WATCH, COLOR.warn], [POOR, COLOR.bad]])]
+    });
+    specChart = new Chart($("specChart"), {
+        type: "bar",
+        data: { labels: [], datasets: [
+            { label: "Normal running", data: [], backgroundColor: "rgba(100,116,139,.55)" },
+            { label: "Latest", data: [], backgroundColor: [] }
+        ] },
+        options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            scales: { x: { title: { display: true, text: "frequency band (Hz)", color: "#6b7a92" }, ticks: { ...ticks, maxRotation: 0, autoSkip: true }, grid: { display: false } },
+                      y: { title: { display: true, text: "log10 band energy", color: "#6b7a92" }, ticks, grid } },
+            plugins: { legend: { labels: { color: "#a7b4c9", boxWidth: 14 } } }
+        }
+    });
+}
+
+function renderTech(d) {
+    initTechCharts();
+    const h = d.health, ml = d.ml, m = d.machine;
+    $("healthHint").textContent = `one point every ${duration(h.interval)}`;
+    healthChart.data.labels = h.points.map(p => p.t);
+    healthChart.data.datasets[0].data = h.points.map(p => p.h);
+    healthChart.update();
+
+    const sp = d.spectrum;
+    specChart.data.labels = sp.labels.map(l => l.replace(" Hz", ""));
+    specChart.data.datasets[0].data = sp.current ? sp.baseline : [];
+    specChart.data.datasets[1].data = sp.current || [];
+    specChart.data.datasets[1].backgroundColor = (sp.current || []).map((_, i) => sp.flagged.includes(i) ? COLOR.bad : "#3b82f6");
+    specChart.update();
+    $("specNote").textContent = !sp.current ? "No calibrated spectrum yet."
+        : sp.flagged.length ? `Bands away from normal (red): ${sp.flagged.map(i => sp.labels[i]).join(", ")}.`
+        : "All frequency bands are within the normal spread of this pump.";
+
+    $("mlModel").textContent = ml.model || "not calibrated";
+    $("mlState").textContent = ml.state === "CALIBRATING" ? `calibrating ${ml.progress}/${ml.needed}` : ml.state.toLowerCase();
+    $("mlScore").textContent = ml.score === null ? "--" : `${ml.score.toFixed(3)} / ${ml.threshold.toFixed(3)}`;
+    $("healthTrend").textContent = h.perDay === null ? "--"
+        : Math.abs(h.perDay) >= 48 ? `${(h.perDay / 24).toFixed(1)} % per hour` : `${h.perDay.toFixed(1)} % per day`;
+    ["btnCalQuick", "btnCalLong"].forEach(id => { $(id).hidden = m.simulated; $(id).disabled = ml.state === "CALIBRATING"; });
+
+    const online = d.edge.online, hasData = d.edge.lastSeenAgo !== null;
+    $("sysEdge").textContent = !hasData ? "waiting" : online ? "online" : "offline";
+    $("sysEdge").className = online ? "t-good" : hasData ? "t-bad" : "";
+    $("sysLast").textContent = hasData ? `${d.current.timestamp} (${d.edge.lastSeenAgo.toFixed(1)} s ago)` : "--";
+    $("sysRate").textContent = d.edge.rate.toFixed(1);
+    $("sysRecovered").textContent = `${m.recovered} readings`;
+    $("sysUptime").textContent = d.uptime;
+    const a = d.alerts;
+    $("sysSms").textContent = a.enabled ? `${a.status.toLowerCase()} · ${a.sent} sent · ${a.recipients} number(s)` : "not set up (.env)";
+    renderFaults(d.faults);
+}
+
+let faultSig = "";
+
+function renderFaults(f) {
+    const sig = JSON.stringify(f.saved);
+    if (sig === faultSig) return;
+    faultSig = sig;
+    const body = $("faultRows");
+    body.innerHTML = "";
+    if (!f.saved.length) { body.innerHTML = '<tr><td colspan="6" class="empty">No faults recorded</td></tr>'; return; }
+    const g = v => v === null || v === undefined ? "--" : Number(v).toFixed(2) + " g";
+    f.saved.forEach(r => {
+        const tr = document.createElement("tr");
+        tr.append(el("td", "num", r.time), el("td", "r num t-bad", g(r.faultValue)), el("td", "r num", g(r.peak)),
+            el("td", "r num", g(r.preAvg)), el("td", "r num", g(r.postAvg)));
+        const td = el("td", "r");
+        const a = el("a", "btn", "CSV");
+        a.href = "/faults/" + encodeURIComponent(r.file);
+        a.setAttribute("download", r.file);
+        td.append(a);
+        tr.append(td);
+        body.append(tr);
+    });
+}
+
+$("techToggle").addEventListener("click", () => {
+    showTech = !showTech;
+    applyTech();
+    setUrl();
+    if (last) renderPump(last);
+});
+
+function applyTech() {
+    $("tech").hidden = !showTech;
+    $("techToggleText").textContent = showTech ? "Hide technical details" : "Show technical details";
+    $("techToggle").querySelector("svg").style.transform = showTech ? "rotate(180deg)" : "";
+}
+
+// ------------------------------------------------------------ alerts & work tab
+
+let openAlerts = [];
+
+async function refreshWork() {
+    try {
+        const [a, w] = await Promise.all([
+            fetch("/api/alerts?open=1", { cache: "no-store" }).then(r => r.json()),
+            fetch("/api/maintenance", { cache: "no-store" }).then(r => r.json()),
+        ]);
+        openAlerts = a.alerts;
+        renderAlerts();
+        renderHistory(w.maintenance);
+    } catch (e) {}
+}
+
+const SEVERITY = ["tripped", "critical", "health", "ml"];
+
+function renderAlerts() {
+    const box = $("openAlerts");
+    box.innerHTML = "";
+    if (!openAlerts.length) { box.innerHTML = '<div class="empty">No alerts. All pumps are fine.</div>'; return; }
+    // one row per pump, headed by its most serious alert
+    const byPump = {};
+    openAlerts.forEach(a => (byPump[a.pump] = byPump[a.pump] || []).push(a));
+    Object.entries(byPump).forEach(([pump, list]) => {
+        list.sort((x, y) => SEVERITY.indexOf(x.kind) - SEVERITY.indexOf(y.kind));
+        const first = list[0];
+        const row = el("div", "row urgent");
+        const main = el("div", "row-main");
+        const title = el("div", "row-title", `${pump}: ${ALERT_TEXT[first.kind] || first.title}`);
+        if (list.some(a => a.escalated)) title.append(el("span", "tag red", "supervisor informed"));
+        const oldest = Math.max(...list.map(a => a.openFor || 0));
+        let sub = `Started ${ago(oldest)}`;
+        if (list.length > 1) sub += " · also: " + list.slice(1).map(a => (ALERT_TEXT[a.kind] || a.title).toLowerCase()).join(", ");
+        main.append(title, el("div", "row-sub", sub));
+        const b = el("button", "btn primary", "I'm handling it");
+        b.addEventListener("click", () => openAck(pump, list));
+        row.append(el("span", "event-dot critical"), main, b);
+        box.append(row);
+    });
+}
+
+function renderHistory(rows) {
+    const box = $("workHistory");
+    box.innerHTML = "";
+    if (!rows.length) { box.innerHTML = '<div class="empty">Nothing recorded yet</div>'; return; }
+    rows.slice(0, 12).forEach(r => {
+        const row = el("div", "row");
+        const main = el("div", "row-main");
+        const title = el("div", "row-title", `${r.pump}: ${r.action}`);
+        if (r.service) title.append(el("span", "tag green", "full service"));
+        main.append(title, el("div", "row-sub", `${r.time} · ${r.technician}` + (r.notes ? ` · ${r.notes}` : "")));
+        row.append(el("span", "event-dot info"), main);
+        box.append(row);
+    });
+}
+
+function savedName() {
+    try { return localStorage.getItem("resqfogName") || ""; } catch (e) { return ""; }
+}
+
+function rememberName(name) {
+    try { localStorage.setItem("resqfogName", name); } catch (e) {}
+}
+
+let ackTarget = null;
+
+function openAck(pump, list) {
+    ackTarget = list;
+    $("ackText").textContent = `${pump}: ${ALERT_TEXT[list[0].kind] || list[0].title}. Confirming tells everyone you are on it and stops the SMS to the supervisor.`;
+    $("ackName").value = savedName();
+    $("ackNote").value = "";
+    $("ackDialog").showModal();
+}
+
+$("ackForm").addEventListener("submit", async e => {
+    if (e.submitter && e.submitter.value === "cancel") return;
+    e.preventDefault();
+    const by = $("ackName").value.trim();
+    if (!by || !ackTarget) return;
+    rememberName(by);
+    const note = $("ackNote").value;
+    const results = await Promise.all(ackTarget.map(a => post(`/api/alerts/${a.id}/ack`, { by, note })));
+    $("ackDialog").close();
+    const failed = results.find(r => !r.ok);
+    toast(!failed ? "Thank you. The alerts are marked as handled." : "Not saved: " + (failed.data.error || "error"));
+    refreshWork();
     refresh();
 });
 
-$("btnSms").addEventListener("click", async () => {
-    if (!confirm("Send a real test SMS to the configured phone numbers?")) return;
-    const btn = $("btnSms");
-    btn.disabled = true;
-    try {
-        const res = await fetch("/test-sms", { method: "POST" });
-        const data = await res.json();
-        toast(data.status === "SENT" ? "Test SMS sent" : "SMS not sent: " + (data.reason || "error"));
-    } catch (e) {
-        toast("SMS request failed");
+function fillPumpSelect(fleet) {
+    const sel = $("wPump");
+    const keep = sel.value || selected;
+    const ids = fleet.map(p => p.id).join();
+    if (sel.dataset.ids !== ids) {
+        sel.innerHTML = "";
+        fleet.forEach(p => { const o = el("option", "", `${p.id} · ${p.site}`); o.value = p.id; sel.append(o); });
+        sel.dataset.ids = ids;
     }
-    btn.disabled = false;
-    refresh();
+    if (keep) sel.value = keep;
+    $("btnReport").href = "/report/" + encodeURIComponent(sel.value || selected);
+}
+
+$("wPump").addEventListener("change", () => { $("btnReport").href = "/report/" + encodeURIComponent($("wPump").value); });
+
+$("workForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const name = $("wName").value.trim();
+    rememberName(name);
+    const { ok, data } = await post("/api/maintenance", {
+        machine: $("wPump").value, technician: name, action: $("wAction").value,
+        notes: $("wNotes").value, service: $("wService").checked
+    });
+    toast(ok ? "Saved" : "Not saved: " + (data.error || "error"));
+    if (ok) { $("wNotes").value = ""; $("wService").checked = false; refreshWork(); refresh(); }
 });
+
+// ------------------------------------------------------------ map tab
+
+let map, markers = {}, pick = null, pumps = [], fitted = false;
+
+function initMap() {
+    if (map) { setTimeout(() => map.invalidateSize(), 50); return; }
+    map = L.map("map").setView([12.9692, 79.1559], 13);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" }).addTo(map);
+    map.on("click", e => {
+        if ($("editPanel").hidden) return;
+        $("pLat").value = e.latlng.lat.toFixed(5);
+        $("pLon").value = e.latlng.lng.toFixed(5);
+        showPick();
+    });
+    setTimeout(() => map.invalidateSize(), 50);
+}
+
+function showPick() {
+    const lat = parseFloat($("pLat").value), lon = parseFloat($("pLon").value);
+    if (!map || isNaN(lat) || isNaN(lon)) return;
+    if (!pick) pick = L.circleMarker([lat, lon], { radius: 7, color: "#fff", weight: 2, fillColor: "#3b82f6", fillOpacity: 1 }).addTo(map);
+    pick.setLatLng([lat, lon]);
+}
+
+async function refreshPumps() {
+    try {
+        pumps = (await (await fetch("/api/pumps", { cache: "no-store" })).json()).pumps;
+    } catch (e) { return; }
+    const body = $("pumpRows");
+    body.innerHTML = "";
+    pumps.forEach(p => {
+        const s = plainStatus(p);
+        const tr = document.createElement("tr");
+        const name = el("td", "", p.id);
+        if (p.simulated) name.append(el("span", "sim", "SIM"));
+        const [word, wcls] = conditionWord(p.health);
+        tr.append(name, el("td", "", p.site), el("td", "t-" + s.tone, s.title),
+            el("td", "r num " + wcls, p.health === null ? "--" : `${p.health} % · ${word.toLowerCase()}`),
+            el("td", "r num", p.hours.run.toFixed(1)));
+        const td = el("td", "r");
+        const b = el("button", "btn", "Edit");
+        b.addEventListener("click", () => editPump(p));
+        td.append(b);
+        tr.append(td);
+        body.append(tr);
+    });
+    if (!map) return;
+    const seen = new Set(), bounds = [];
+    pumps.forEach(p => {
+        if (p.lat === null || p.lon === null) return;
+        seen.add(p.id);
+        bounds.push([p.lat, p.lon]);
+        const s = plainStatus(p);
+        let mk = markers[p.id];
+        if (!mk) {
+            mk = markers[p.id] = L.circleMarker([p.lat, p.lon], { radius: 12, weight: 3, color: "#0d1526", fillOpacity: .95 }).addTo(map);
+            mk.on("click", () => { showTab("pumps"); selectPump(p.id); });
+        }
+        mk.setLatLng([p.lat, p.lon]);
+        mk.setStyle({ fillColor: COLOR[s.tone] });
+        mk.bindTooltip(`<b>${p.id}</b> · ${p.site}<br>${s.title}` + (p.health !== null ? `<br>Condition ${p.health}%` : ""));
+    });
+    Object.keys(markers).forEach(id => { if (!seen.has(id)) { map.removeLayer(markers[id]); delete markers[id]; } });
+    $("mapHint").textContent = `${seen.size} of ${pumps.length} pumps have a location · tap one to open it`;
+    if (!fitted && bounds.length) { map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 }); fitted = true; }
+}
+
+function editPump(p) {
+    $("editPanel").hidden = false;
+    $("editTitle").textContent = p ? `Pump details · ${p.id}` : "Add a pump";
+    $("pId").value = p ? p.id : "";
+    $("pId").readOnly = !!p;
+    $("pSite").value = p ? p.site : "";
+    $("pLat").value = p && p.lat !== null ? p.lat : "";
+    $("pLon").value = p && p.lon !== null ? p.lon : "";
+    $("pKw").value = p && p.motorKw !== null ? p.motorKw : "";
+    $("pInstalled").value = p ? p.installed || "" : "";
+    $("pNotes").value = p ? p.notes || "" : "";
+    showPick();
+    $("editPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("btnAddPump").addEventListener("click", () => editPump(null));
+$("btnCancelEdit").addEventListener("click", () => { $("editPanel").hidden = true; });
+$("pLat").addEventListener("change", showPick);
+$("pLon").addEventListener("change", showPick);
+
+$("pumpForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const { ok, data } = await post("/api/pumps", {
+        id: $("pId").value, site: $("pSite").value, lat: $("pLat").value, lon: $("pLon").value,
+        motorKw: $("pKw").value, installed: $("pInstalled").value, notes: $("pNotes").value
+    });
+    toast(ok ? "Pump saved" : "Not saved: " + (data.error || "error"));
+    if (ok) { $("editPanel").hidden = true; fitted = false; refreshPumps(); refresh(); }
+});
+
+// ------------------------------------------------------------ tabs, header, refresh
+
+function showTab(name) {
+    tab = ["pumps", "work", "map"].includes(name) ? name : "pumps";
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+    ["pumps", "work", "map"].forEach(t => $("tab-" + t).hidden = t !== tab);
+    setUrl();
+    if (tab === "map") { initMap(); refreshPumps(); }
+    if (tab === "work") refreshWork();
+}
+
+document.querySelectorAll(".tab-btn").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+$("alertBtn").addEventListener("click", () => showTab("work"));
+$("btnGoAlerts").addEventListener("click", () => showTab("work"));
+
+function render(d) {
+    last = d;
+    selected = d.machine.id;
+    $("demoPill").hidden = d.mode !== "DEMO";
+    $("sysDot").className = "dot on";
+    $("sysText").textContent = "System online";
+
+    const n = d.pumpsWithAlerts;      // the alert list shows one row per pump
+    $("alertBtn").classList.toggle("has", n > 0);
+    $("alertBtnText").textContent = n === 0 ? "No alerts" : n === 1 ? "1 pump needs attention" : `${n} pumps need attention`;
+    $("tabCount").dataset.n = n;
+    $("tabCount").textContent = n || "";
+    $("escHint").textContent = `Someone should confirm each alert. If nobody does within ${duration(d.alerts.escalateAfter)}, the supervisor gets an SMS.`;
+
+    renderCards(d.fleet);
+    fillPumpSelect(d.fleet);
+    if (!$("wName").value) $("wName").value = savedName();
+    renderPump(d);
+}
+
+async function refresh() {
+    try {
+        const res = await fetch("/api/status?machine=" + encodeURIComponent(selected), { cache: "no-store" });
+        if (!res.ok) throw new Error(res.status);
+        render(await res.json());
+    } catch (e) {
+        $("sysDot").className = "dot off";
+        $("sysText").textContent = "Server not reachable";
+    }
+}
+
+// ------------------------------------------------------------ actions
 
 $("btnRestart").addEventListener("click", async () => {
-    if (!confirm(`Restart the motor of ${selected}? Only do this after the pump has been inspected.`)) return;
-    const res = await fetch("/api/command", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ machine: selected, command: "RESET_TRIP" })
-    });
-    toast(res.ok ? "Restart sent, the edge node will apply it with its next reading" : "Restart not sent");
+    if (!confirm(`Restart the motor of ${selected}? Only do this after the pump has been checked.`)) return;
+    const { ok } = await post("/api/command", { machine: selected, command: "RESET_TRIP" });
+    toast(ok ? "Restart sent. The motor starts with the next reading." : "Restart not sent");
     refresh();
 });
 
-$("btnCalibrate").addEventListener("click", () => calibrate("quick"));
+async function calibrate(mode) {
+    const text = mode === "long"
+        ? `Calibrate ${selected} for one hour? Let the pump run normally at its usual speeds.`
+        : `Calibrate ${selected} now? Let the pump run normally for about 2 minutes.`;
+    if (!confirm(text)) return;
+    const { ok } = await post("/api/calibrate", { machine: selected, mode });
+    toast(ok ? "Calibration started" : "Calibration not started");
+    refresh();
+}
 
-buildScale();
-initChart();
+$("btnCalQuick").addEventListener("click", () => calibrate("quick"));
+$("btnCalLong").addEventListener("click", () => calibrate("long"));
+
+$("btnSms").addEventListener("click", async () => {
+    if (!confirm("Send a test SMS to the configured numbers?")) return;
+    const { data } = await post("/test-sms");
+    toast(data.status === "SENT" ? "Test SMS sent" : "SMS not sent: " + (data.reason || "error"));
+    refresh();
+});
+
+$("btnReset").addEventListener("click", async () => {
+    if (!confirm(`Clear the statistics and graph of ${selected}?`)) return;
+    await post("/api/reset", { machine: selected });
+    toast("Statistics cleared");
+    refresh();
+});
+
+initCharts();
+applyTech();
 showTab(tab);
 refresh();
-tickClock();
 setInterval(refresh, 1000);
-setInterval(tickClock, 1000);
 setInterval(() => {
+    if (tab === "work") refreshWork();
     if (tab === "map") refreshPumps();
-    if (tab === "maintenance") refreshOpenAlerts();
 }, 3000);
 </script>
 

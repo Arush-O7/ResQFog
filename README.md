@@ -58,18 +58,21 @@ So at the MPU6050's bandwidth the score never raised a false alarm, warned befor
 
 ## Dashboard
 
+The dashboard is made for the person looking after the pumps, so it uses plain language ("Running normally", "Vibration too high", "Stopped for safety") and always says what to do next. It has three tabs:
+
 | Tab | What it shows |
 |---|---|
-| Overview | Live state of the selected pump, vibration graph, KPIs, system health, event log, fault recordings, motor restart |
-| Health | Health score and level, trend per day, time to "poor", health history, and the latest spectrum against normal running with the abnormal bands in red |
-| Map & pumps | Every pump on an OpenStreetMap map coloured by state, the pump registry (site, location, motor rating, installation date, running hours) and a form to add or edit a pump; click the map to set its location |
-| Maintenance | Open alerts of all pumps with an Acknowledge button, alert history, running hours and next service, the maintenance log, and a printable pump report and history CSV |
+| Pumps | A card per pump; for the selected pump its status and what to do, vibration, condition (health score) with its trend, motor and next service, a 2-minute vibration graph and recent activity. A restart button appears when the motor has been stopped for safety. |
+| Alerts & work | Alerts waiting for someone, each with an "I'm handling it" button; a form to record the work done; the work history and a printable pump report |
+| Map | Every pump on an OpenStreetMap map coloured by status, the pump list, and a form to add a pump or edit its site and location (tap the map to set it) |
 
-![Health tab](docs/images/health.png)
+Engineering details stay out of the way under **Show technical details** on the Pumps tab: condition history, the vibration spectrum against normal running, the ML model and score, calibration buttons, system status, test SMS and fault recordings.
 
-![Map and pump registry](docs/images/map.png)
+![Alerts and work tab](docs/images/maintenance.png)
 
-![Maintenance tab](docs/images/maintenance.png)
+![Map tab](docs/images/map.png)
+
+![Technical details](docs/images/health.png)
 
 ## Alerts, acknowledgement and escalation
 
@@ -137,9 +140,9 @@ python3 fog_server.py
 
 Open `http://127.0.0.1:5001`, or `http://<laptop-ip>:5001` from a phone on the same network. Then:
 
-1. On **Map & pumps**, select the pump, enter its site and location (click the map, or long-press the pump in Google Maps on site and copy the two numbers) and save.
-2. On **Health**, press **Calibrate** while the pump runs normally (change the speed a little).
-3. Alerts appear under **Maintenance**; acknowledge them there, and log the work done.
+1. On **Map**, press Edit next to the pump, enter its site and location (tap the map, or long-press the pump in Google Maps on site and copy the two numbers) and save.
+2. On **Pumps**, open **Show technical details** and press **Calibrate** while the pump runs normally (change the speed a little).
+3. Alerts appear under **Alerts & work**; press "I'm handling it" there, and record the work done.
 
 The registry, health history, alerts and maintenance log are kept in `resqfog.db` next to the server. A pump calibrated with an older version needs to be calibrated again to get a health score.
 
@@ -147,7 +150,7 @@ The registry, health history, alerts and maintenance log are kept in `resqfog.db
 |---|---|
 | `python3 fog_server.py` | Real edge nodes, real alerts |
 | `python3 fog_server.py --fleet` | Real ESP32 as PUMP-01 plus three simulated pumps |
-| `python3 fog_server.py --demo` | Four simulated pumps, no hardware, no SMS, nothing saved; PUMP-02 wears out over 15 minutes (log a service on it to replace the bearing) |
+| `python3 fog_server.py --demo` | Four simulated pumps, no hardware, no SMS, nothing saved; PUMP-02 wears out over 15 minutes (record a full service on it to replace the bearing) |
 | `python3 fog_server.py --test-sms` | Sends one test SMS with the settings in `.env` |
 
 ### SMS alerts
@@ -196,7 +199,7 @@ The thresholds are in two places and must match: the top of `fog_server.py` and 
 ```
 fog_server.py               Flask fog server, alerts, escalation and pump simulator
 store.py                    SQLite: pump registry, health history, alerts, maintenance log
-templates/dashboard.html    dashboard (Overview, Health, Map & pumps, Maintenance)
+templates/dashboard.html    dashboard (Pumps, Alerts & work, Map)
 templates/report.html       printable pump report
 static/                     Chart.js and Leaflet, served locally
 ml/features.py              band-energy features (used for training and live)
