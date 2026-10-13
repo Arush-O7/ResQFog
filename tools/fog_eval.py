@@ -187,6 +187,11 @@ def main():
     finally:
         proc.terminate()
         proc.wait()
+        # the server saves each calibrated test pump; remove them again
+        pump_dir = os.path.join(ROOT, "ml", "pumps")
+        for name in os.listdir(pump_dir) if os.path.isdir(pump_dir) else []:
+            if name.startswith("EVAL-") and name.endswith(".joblib"):
+                os.remove(os.path.join(pump_dir, name))
     results["wifi_hop_to_router"] = wifi_hop()
     try:
         results["cloud_round_trip"] = cloud_rtt()
