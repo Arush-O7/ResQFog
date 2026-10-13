@@ -612,10 +612,14 @@ function renderPump(d) {
     $("vibValue").innerHTML = "";
     $("vibValue").append(hasData ? Number(c.vibration).toFixed(2) : "--", el("small", "", "g"));
     const vt = c.status === "CRITICAL" ? ["Too high", "bad"] : c.status === "WARNING" ? ["High", "warn"] : ["Normal", "good"];
-    $("vibWord").textContent = hasData ? vt[0] : "--";
-    $("vibWord").className = "tile-word t-" + (hasData ? vt[1] : "idle");
+    // without a signal the numbers are only the last reading, so they are greyed out
+    const stale = hasData && !d.edge.online;
+    const lastSeen = stale ? `Last reading ${ago(d.edge.lastSeenAgo)}` : null;
+    $("vibValue").className = "tile-value num" + (stale ? " t-idle" : "");
+    $("vibWord").textContent = !hasData ? "--" : stale ? lastSeen : vt[0];
+    $("vibWord").className = "tile-word t-" + (!hasData || stale ? "idle" : vt[1]);
     $("vibBar").style.width = (hasData ? Math.min(c.vibration, VIB_MAX) / VIB_MAX * 100 : 0) + "%";
-    $("vibBar").style.background = COLOR[vt[1]];
+    $("vibBar").style.background = stale ? COLOR.idle : COLOR[vt[1]];
 
     // condition
     const [word, wcls, wcolor] = conditionWord(h.score);
@@ -638,6 +642,10 @@ function renderPump(d) {
     const hrs = d.hours;
     if (!hasData) {
         $("motorValue").textContent = "--"; $("motorValue").className = "tile-value"; $("motorNote").textContent = "--";
+    } else if (stale) {
+        $("motorValue").textContent = "Not known"; $("motorValue").className = "tile-value t-idle";
+        $("motorNote").textContent = m.motor === "TRIPPED" ? "Was stopped for safety at the last reading"
+            : c.motorSpeedPercent < 10 ? "Was off at the last reading" : `Was running at ${c.motorSpeedPercent} % speed at the last reading`;
     } else if (m.motor === "TRIPPED") {
         $("motorValue").textContent = "Stopped for safety"; $("motorValue").className = "tile-value t-bad";
         $("motorNote").textContent = `Stopped ${m.trips} time${m.trips === 1 ? "" : "s"} so far`;
