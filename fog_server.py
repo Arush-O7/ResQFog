@@ -22,6 +22,7 @@ import math
 import os
 import random
 import re
+import ssl
 import sys
 import threading
 import time
@@ -956,6 +957,16 @@ def cd_number(number):
     return "91" + digits if len(digits) == 10 else digits
 
 
+def https_context():
+    """Python from python.org on macOS does not use the system certificates,
+    so HTTPS fails with CERTIFICATE_VERIFY_FAILED; use certifi's list instead."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
 def send_via_circuitdigest(numbers, messages):
     for template, var1, var2 in messages:
         for number in numbers:
@@ -966,7 +977,7 @@ def send_via_circuitdigest(numbers, messages):
                 headers={"Content-Type": "application/json", "Authorization": CIRCUITDIGEST_API_KEY},
             )
             try:
-                with urllib.request.urlopen(request, timeout=15) as response:
+                with urllib.request.urlopen(request, timeout=15, context=https_context()) as response:
                     if response.status != 200:
                         raise RuntimeError(f"CircuitDigest replied {response.status}")
             except urllib.error.HTTPError as e:
